@@ -1,0 +1,25 @@
+/* Vite'nin varsayılan genişlik ve boşluk kısıtlamalarını kaldırır. */
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #f4f7fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
