@@ -75,29 +75,82 @@ def create_doctor(doctor: Doctor, session: Session = Depends(get_session)):
 def get_doctors(session: Session = Depends(get_session)):
     return session.exec(select(Doctor)).all()
 
-# 📅 --- Randevu (Appointment) Endpointleri ---
 @app.post("/appointments/", response_model=Appointment)
-def create_appointment(appointment: Appointment, session: Session = Depends(get_session)):
-    # SQLite DateTime alanı string kabul etmez; API'den gelen değeri
-    # veritabanına eklemeden önce her durumda Python datetime nesnesine çevir.
+def create_appointment(
+    appointment: Appointment,
+    session: Session = Depends(get_session)
+):
     raw_date = appointment.appointment_date
-    if isinstance(raw_date, datetime):
-        appointment.appointment_date = raw_date
-    else:
-        try:
-            appointment.appointment_date = datetime.fromisoformat(
+
+    try:
+        parsed_date = (
+            raw_date
+            if isinstance(raw_date, datetime)
+            else datetime.fromisoformat(
                 str(raw_date).replace("Z", "+00:00")
             )
-        except ValueError:
-            raise HTTPException(
-                status_code=422,
-                detail="appointment_date ISO formatında olmalıdır. Örnek: 2026-09-10T12:40:00",
-            )
+        )
+
+        if parsed_date.tzinfo is not None:
+            parsed_date = parsed_date.astimezone().replace(tzinfo=None)
+
+        appointment.appointment_date = parsed_date
+
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "appointment_date ISO formatında olmalıdır. "
+                "Örnek: 2026-09-25T10:30:00"
+            ),
+        )
+
+    if appointment.appointment_date < datetime.now():
+        raise HTTPException(
+            status_code=400,
+            detail="Geçmiş bir tarih ve saate randevu alınamaz.",
+        )
+
+    doctor_conflict = session.exec(
+        select(Appointment).where(
+            Appointment.doctor_id == appointment.doctor_id,
+            Appointment.appointment_date == appointment.appointment_date,
+            Appointment.status != "İptal Edildi",
+        )
+    ).first()
+
+    if doctor_conflict:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Doktorun bu tarih ve saatte başka "
+                "bir randevusu bulunmaktadır."
+            ),
+        )
+
+    patient_conflict = session.exec(
+        select(Appointment).where(
+            Appointment.patient_id == appointment.patient_id,
+            Appointment.appointment_date == appointment.appointment_date,
+            Appointment.status != "İptal Edildi",
+        )
+    ).first()
+
+    if patient_conflict:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Hastanın bu tarih ve saatte başka "
+                "bir randevusu bulunmaktadır."
+            ),
+        )
 
     session.add(appointment)
     session.commit()
     session.refresh(appointment)
+
     return appointment
+
 
 @app.get("/appointments/", response_model=list[Appointment])
 def get_appointments(doctor_id: int | None = None, session: Session = Depends(get_session)):

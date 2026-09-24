@@ -27,6 +27,21 @@ const emptyExamination = {
   days: '5',
 }
 
+function getLocalToday() {
+  const today = new Date()
+  const year = today.getFullYear()
+  const month = String(today.getMonth() + 1).padStart(2, '0')
+  const day = String(today.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function getLocalTime() {
+  const now = new Date()
+  return `${String(now.getHours()).padStart(2, '0')}:${String(
+    now.getMinutes(),
+  ).padStart(2, '0')}`
+}
+
 async function getErrorMessage(response, fallback) {
   try {
     const data = await response.json()
@@ -58,6 +73,7 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const [currentDateTime, setCurrentDateTime] = useState(new Date())
 
   const loadData = async () => {
     try {
@@ -92,6 +108,11 @@ function App() {
 
   useEffect(() => {
     loadData()
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setCurrentDateTime(new Date()), 1000)
+    return () => window.clearInterval(timer)
   }, [])
 
   const filteredPatients = useMemo(() => {
@@ -172,6 +193,51 @@ function App() {
     event.preventDefault()
     setError('')
     setSuccessMessage('')
+
+    if (
+      !appointmentForm.patient_id ||
+      !appointmentForm.doctor_id ||
+      !appointmentForm.department_id
+    ) {
+      setError('Hasta, poliklinik ve doktor seçmelisiniz.')
+      return
+    }
+
+    const selectedDateTime = new Date(
+      `${appointmentForm.date}T${appointmentForm.time}`,
+    )
+
+    if (!appointmentForm.date || !appointmentForm.time || selectedDateTime < new Date()) {
+      setError('Geçmiş bir tarih veya saate randevu alınamaz.')
+      return
+    }
+
+    const selectedDateKey = `${appointmentForm.date}T${appointmentForm.time}`
+    const activeAppointments = appointments.filter(
+      (item) => item.status !== 'İptal' && item.status !== 'İptal Edildi',
+    )
+
+    const doctorConflict = activeAppointments.some(
+      (item) =>
+        String(item.doctor_id) === String(appointmentForm.doctor_id) &&
+        String(item.appointment_date).slice(0, 16) === selectedDateKey,
+    )
+
+    if (doctorConflict) {
+      setError('Bu doktorun seçtiğiniz gün ve saatte başka bir randevusu var.')
+      return
+    }
+
+    const patientConflict = activeAppointments.some(
+      (item) =>
+        String(item.patient_id) === String(appointmentForm.patient_id) &&
+        String(item.appointment_date).slice(0, 16) === selectedDateKey,
+    )
+
+    if (patientConflict) {
+      setError('Bu hastanın seçtiğiniz gün ve saatte başka bir randevusu var.')
+      return
+    }
 
     try {
       setSaving(true)
@@ -323,7 +389,13 @@ function App() {
           <h1 style={styles.title}>HBYS Yönetim Paneli</h1>
           <p style={styles.subtitle}>Randevu, muayene ve reçete süreçlerini yönetin.</p>
         </div>
-        <div style={styles.headerIcon}>🏥</div>
+        <div style={styles.headerRight}>
+          <div style={styles.clockBox}>
+            <strong>{currentDateTime.toLocaleTimeString('tr-TR')}</strong>
+            <span>{currentDateTime.toLocaleDateString('tr-TR')}</span>
+          </div>
+          <div style={styles.headerIcon}>🏥</div>
+        </div>
       </header>
 
       <section style={styles.roleBar}>
@@ -455,6 +527,7 @@ function App() {
 
       {isAppointmentModalOpen && (
         <Modal title="Yeni Randevu Oluştur" onClose={() => setIsAppointmentModalOpen(false)}>
+          {error && <p style={styles.modalError}>{error}</p>}
           <form onSubmit={handleCreateAppointment} style={styles.modalForm}>
             <Select label="Hasta" name="patient_id" value={appointmentForm.patient_id} onChange={updateForm(setAppointmentForm)} options={patients.map((item) => ({ value: item.id, label: `${item.first_name} ${item.last_name}` }))} placeholder="Hasta seçin" />
             <Select label="Poliklinik" name="department_id" value={appointmentForm.department_id} onChange={updateForm(setAppointmentForm)} options={departments.map((item) => ({ value: item.id, label: item.name }))} placeholder="Poliklinik seçin" />
@@ -469,7 +542,7 @@ function App() {
   // POLİKLİNİK SEÇİLMEDEN DOKTOR SEÇİMİNİ PASİF YAP:
   disabled={!appointmentForm.department_id} 
 />
-            <div style={styles.modalRow}><Input label="Tarih" name="date" type="date" value={appointmentForm.date} onChange={updateForm(setAppointmentForm)} required /><Input label="Saat" name="time" type="time" value={appointmentForm.time} onChange={updateForm(setAppointmentForm)} required /></div>
+            <div style={styles.modalRow}><Input label="Tarih" name="date" type="date" min={getLocalToday()} value={appointmentForm.date} onChange={updateForm(setAppointmentForm)} required /><Input label="Saat" name="time" type="time" min={appointmentForm.date === getLocalToday() ? getLocalTime() : undefined} value={appointmentForm.time} onChange={updateForm(setAppointmentForm)} required /></div>
             <Textarea label="Not (isteğe bağlı)" name="note" value={appointmentForm.note} onChange={updateForm(setAppointmentForm)} placeholder="Randevu notu..." />
             <ModalFooter onClose={() => setIsAppointmentModalOpen(false)} saving={saving} submitText="Randevuyu Kaydet" />
           </form>
@@ -572,6 +645,8 @@ const styles = {
   title: { margin: 0, color: '#172554', fontSize: '32px' },
   subtitle: { margin: '10px 0 0', color: '#64748b' },
   headerIcon: { display: 'grid', placeItems: 'center', width: '62px', height: '62px', borderRadius: '18px', backgroundColor: '#dbeafe', fontSize: '30px' },
+  headerRight: { display: 'flex', alignItems: 'center', gap: '14px' },
+  clockBox: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px', color: '#172554', fontSize: '13px' },
   roleBar: { maxWidth: '1200px', margin: '0 auto 20px', display: 'flex', alignItems: 'center', gap: '8px', padding: '8px', border: '1px solid #dbeafe', borderRadius: '10px', backgroundColor: '#eff6ff' },
   roleLabel: { marginRight: '6px', color: '#475569', fontSize: '13px', fontWeight: 'bold' },
   roleButton: { padding: '9px 13px', border: 0, borderRadius: '7px', color: '#475569', backgroundColor: 'transparent', cursor: 'pointer' },
@@ -628,6 +703,7 @@ const styles = {
   modalRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' },
   modalFooter: { display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '18px', borderTop: '1px solid #e2e8f0' },
   modalHint: { margin: '0 0 14px', padding: '10px 12px', borderRadius: '8px', color: '#475569', backgroundColor: '#f1f5f9', fontSize: '13px', lineHeight: 1.5 },
+  modalError: { margin: '0 0 14px', padding: '11px 12px', border: '1px solid #fecaca', borderRadius: '8px', color: '#991b1b', backgroundColor: '#fef2f2', fontSize: '13px', lineHeight: 1.4 },
   infoMessage: { maxWidth: '1200px', margin: '0 auto 14px', padding: '12px 16px', borderRadius: '8px', color: '#1e40af', backgroundColor: '#dbeafe' },
   errorMessage: { maxWidth: '1200px', margin: '0 auto 14px', padding: '12px 16px', borderRadius: '8px', color: '#991b1b', backgroundColor: '#fee2e2' },
   successMessage: { maxWidth: '1200px', margin: '0 auto 14px', padding: '12px 16px', borderRadius: '8px', color: '#166534', backgroundColor: '#dcfce7' },
