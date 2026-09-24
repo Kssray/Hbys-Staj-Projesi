@@ -78,9 +78,22 @@ def get_doctors(session: Session = Depends(get_session)):
 # 📅 --- Randevu (Appointment) Endpointleri ---
 @app.post("/appointments/", response_model=Appointment)
 def create_appointment(appointment: Appointment, session: Session = Depends(get_session)):
-    if isinstance(appointment.appointment_date, str):
-        appointment.appointment_date = datetime.fromisoformat(appointment.appointment_date)
-    
+    # SQLite DateTime alanı string kabul etmez; API'den gelen değeri
+    # veritabanına eklemeden önce her durumda Python datetime nesnesine çevir.
+    raw_date = appointment.appointment_date
+    if isinstance(raw_date, datetime):
+        appointment.appointment_date = raw_date
+    else:
+        try:
+            appointment.appointment_date = datetime.fromisoformat(
+                str(raw_date).replace("Z", "+00:00")
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail="appointment_date ISO formatında olmalıdır. Örnek: 2026-09-10T12:40:00",
+            )
+
     session.add(appointment)
     session.commit()
     session.refresh(appointment)
