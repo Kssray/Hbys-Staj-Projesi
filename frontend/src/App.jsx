@@ -1,4 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  AppointmentTable,
+  Input,
+  LoginScreen,
+  Modal,
+  ModalFooter,
+  SearchBox,
+  Select,
+  Spinner,
+  StatCard,
+  Textarea,
+  Toast,
+} from './components/HbysComponents.jsx'
+import styles from './styles.js'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
 
@@ -52,13 +66,29 @@ async function getErrorMessage(response, fallback) {
 }
 
 function App() {
-  const [role, setRole] = useState('secretary')
+  const [user, setUser] = useState(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem('hbys_user')) || null
+    } catch {
+      return null
+    }
+  })
+  const [role, setRole] = useState(() => {
+    try {
+      const storedUser = JSON.parse(sessionStorage.getItem('hbys_user'))
+      return storedUser?.role === 'doktor' ? 'doctor' : storedUser?.role === 'hasta' ? 'patient' : storedUser?.role === 'yonetici' ? 'admin' : 'secretary'
+    } catch {
+      return 'secretary'
+    }
+  })
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' })
   const [departments, setDepartments] = useState([])
   const [doctors, setDoctors] = useState([])
   const [patients, setPatients] = useState([])
   const [appointments, setAppointments] = useState([])
   const [medicalRecords, setMedicalRecords] = useState([])
   const [prescriptions, setPrescriptions] = useState([])
+  const [auditLogs, setAuditLogs] = useState([])
 
   const [patientForm, setPatientForm] = useState(emptyPatient)
   const [appointmentForm, setAppointmentForm] = useState(emptyAppointment)
@@ -73,18 +103,107 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const [newPatientCredentials, setNewPatientCredentials] = useState(null)
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false)
+  const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' })
   const [currentDateTime, setCurrentDateTime] = useState(new Date())
+  const [calendarDate, setCalendarDate] = useState(getLocalToday())
+
+  const handleLogin = async (event) => {
+    event.preventDefault()
+    if (saving) return
+    setError('')
+    setSaving(true)
+
+    try {
+      const response = await fetch(`${API_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginForm),
+      })
+      if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Giriş yapılamadı.'))
+      }
+      const loggedInUser = await response.json()
+      sessionStorage.setItem('hbys_user', JSON.stringify(loggedInUser))
+      setUser(loggedInUser)
+      setRole(loggedInUser.role === 'doktor' ? 'doctor' : loggedInUser.role === 'hasta' ? 'patient' : loggedInUser.role === 'yonetici' ? 'admin' : 'secretary')
+      setLoginForm({ username: '', password: '' })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleLogout = () => {
+    sessionStorage.removeItem('hbys_user')
+    setUser(null)
+    setRole('secretary')
+  }
+
+  const handleChangePassword = async (event) => {
+    event.preventDefault()
+    if (saving) return
+    setError('')
+    setSuccessMessage('')
+    if (passwordForm.new_password.length < 8) {
+      setError('Yeni şifre en az 8 karakter olmalıdır.')
+      return
+    }
+    if (passwordForm.new_password !== passwordForm.confirm_password) {
+      setError('Yeni şifre tekrarı eşleşmiyor.')
+      return
+    }
+    try {
+      setSaving(true)
+      const response = await fetch(`${API_URL}/auth/change-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: user.id, current_password: passwordForm.current_password, new_password: passwordForm.new_password }),
+      })
+      if (!response.ok) throw new Error(await getErrorMessage(response, 'Şifre değiştirilemedi.'))
+      setPasswordForm({ current_password: '', new_password: '', confirm_password: '' })
+      setIsPasswordModalOpen(false)
+      setSuccessMessage('Şifreniz başarıyla değiştirildi.')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const loadData = async () => {
     try {
       setLoading(true)
+      const appointmentsUrl = user?.role === 'doktor' && user.doctor_id
+        ? `${API_URL}/appointments/?doctor_id=${user.doctor_id}`
+        : user?.role === 'sekreter' && user.department_id
+          ? `${API_URL}/appointments/?department_id=${user.department_id}`
+          : user?.role === 'hasta' && user.patient_id
+            ? `${API_URL}/appointments/?patient_id=${user.patient_id}`
+            : `${API_URL}/appointments/`
+      const patientsUrl = user?.role === 'hasta' && user.patient_id
+        ? `${API_URL}/patients/?patient_id=${user.patient_id}`
+        : `${API_URL}/patients/`
+      const medicalRecordsUrl = user?.role === 'hasta' && user.patient_id
+        ? `${API_URL}/medical-records/?patient_id=${user.patient_id}`
+        : user?.role === 'doktor' && user.doctor_id
+          ? `${API_URL}/medical-records/?doctor_id=${user.doctor_id}`
+          : `${API_URL}/medical-records/`
+      const prescriptionsUrl = user?.role === 'hasta' && user.patient_id
+        ? `${API_URL}/prescriptions/?patient_id=${user.patient_id}`
+        : user?.role === 'doktor' && user.doctor_id
+          ? `${API_URL}/prescriptions/?doctor_id=${user.doctor_id}`
+          : `${API_URL}/prescriptions/`
       const responses = await Promise.all([
         fetch(`${API_URL}/departments/`),
         fetch(`${API_URL}/doctors/`),
-        fetch(`${API_URL}/patients/`),
-        fetch(`${API_URL}/appointments/`),
-        fetch(`${API_URL}/medical-records/`),
-        fetch(`${API_URL}/prescriptions/`),
+        fetch(patientsUrl),
+        fetch(appointmentsUrl),
+        fetch(medicalRecordsUrl),
+        fetch(prescriptionsUrl),
+        fetch(`${API_URL}/audit-logs/`),
       ])
 
       if (responses.some((response) => !response.ok)) {
@@ -98,6 +217,7 @@ function App() {
       setAppointments(data[3])
       setMedicalRecords(data[4])
       setPrescriptions(data[5])
+      setAuditLogs(data[6])
     } catch (err) {
       console.error(err)
       setError('Veriler yüklenemedi. Backend sunucusunun çalıştığını kontrol edin.')
@@ -107,13 +227,31 @@ function App() {
   }
 
   useEffect(() => {
-    loadData()
-  }, [])
+    if (user) loadData()
+  }, [user])
 
   useEffect(() => {
     const timer = window.setInterval(() => setCurrentDateTime(new Date()), 1000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    const elements = document.querySelectorAll('[data-reveal]')
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('is-visible')
+            observer.unobserve(entry.target)
+          }
+        })
+      },
+      { threshold: 0.12 },
+    )
+
+    elements.forEach((element) => observer.observe(element))
+    return () => observer.disconnect()
+  }, [role, loading])
 
   const filteredPatients = useMemo(() => {
     const query = patientSearch.toLocaleLowerCase('tr-TR')
@@ -134,6 +272,10 @@ function App() {
     })
   }, [appointments, patients, doctors, appointmentSearch])
 
+  const calendarAppointments = useMemo(() => appointments
+    .filter((appointment) => String(appointment.appointment_date).slice(0, 10) === calendarDate)
+    .sort((a, b) => String(a.appointment_date).localeCompare(String(b.appointment_date))), [appointments, calendarDate])
+
   const filteredDoctorsByDepartment = useMemo(() => {
     // Eğer randevu formunda bir poliklinik (department_id) seçilmişse:
     if (appointmentForm.department_id) {
@@ -144,6 +286,23 @@ function App() {
     // Seçilmemişse tüm doktorları listele (veya boş dizi [] döndürebilirsin)
     return doctors
   }, [doctors, appointmentForm.department_id])
+
+  const visibleDepartments = useMemo(() => {
+    if (user?.role === 'sekreter' && user.department_id) {
+      return departments.filter((department) => department.id === user.department_id)
+    }
+    return departments
+  }, [departments, user])
+
+  const appointmentStats = useMemo(() => {
+    const today = getLocalToday()
+    return {
+      today: appointments.filter((item) => String(item.appointment_date).slice(0, 10) === today).length,
+      pending: appointments.filter((item) => item.status === 'Bekliyor').length,
+      completed: appointments.filter((item) => item.status === 'Tamamlandı').length,
+      cancelled: appointments.filter((item) => item.status === 'İptal' || item.status === 'İptal Edildi').length,
+    }
+  }, [appointments])
 
   const updateForm = (setter) => (event) => {
     const { name, value } = event.target
@@ -160,6 +319,7 @@ function App() {
 
   const handleAddPatient = async (event) => {
     event.preventDefault()
+    if (saving) return
     setError('')
     setSuccessMessage('')
 
@@ -170,7 +330,7 @@ function App() {
 
     try {
       setSaving(true)
-      const response = await fetch(`${API_URL}/patients/`, {
+      const response = await fetch(`${API_URL}/patients/?user_id=${user.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patientForm),
@@ -178,10 +338,25 @@ function App() {
       if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Hasta kaydedilemedi.'))
       }
-      const patient = await response.json()
+      const result = await response.json()
+      // Backend yeniden başlatılmadan önceki sürüm yalnızca Patient döndürebilir.
+      // Yeni sürüm ise { patient, username, temporary_password } döndürür.
+      const patient = result.patient || result.data?.patient || result
+      if (!patient?.id) {
+        throw new Error('Sunucudan geçerli hasta kaydı alınamadı. Backend’i durdurup main.py dosyasının bulunduğu klasörde yeniden başlatın.')
+      }
       setPatients((previous) => [...previous, patient])
       setPatientForm(emptyPatient)
-      setSuccessMessage('Hasta başarıyla kaydedildi.')
+      if (result.username && result.temporary_password) {
+        setNewPatientCredentials({
+          fullName: `${patient.first_name} ${patient.last_name}`,
+          username: result.username,
+          password: result.temporary_password,
+        })
+        setSuccessMessage('Hasta ve hasta kullanıcı hesabı başarıyla oluşturuldu.')
+      } else {
+        setSuccessMessage('Hasta kaydedildi. Kullanıcı hesabı için backend’i yeniden başlatın.')
+      }
     } catch (err) {
       setError(err.message)
     } finally {
@@ -191,6 +366,7 @@ function App() {
 
   const handleCreateAppointment = async (event) => {
     event.preventDefault()
+    if (saving) return
     setError('')
     setSuccessMessage('')
 
@@ -249,7 +425,9 @@ function App() {
           doctor_id: Number(appointmentForm.doctor_id),
           department_id: Number(appointmentForm.department_id),
           appointment_date: `${appointmentForm.date}T${appointmentForm.time}:00`,
-          status: 'Bekliyor',
+          status: role === 'patient' ? 'Talep Edildi' : 'Onaylandı',
+          request_note: appointmentForm.note.trim() || null,
+          requested_by_user_id: user.id,
         }),
       })
       if (!response.ok) {
@@ -259,7 +437,7 @@ function App() {
       setAppointments((previous) => [...previous, appointment])
       setAppointmentForm(emptyAppointment)
       setIsAppointmentModalOpen(false)
-      setSuccessMessage('Randevu başarıyla oluşturuldu.')
+      setSuccessMessage(role === 'patient' ? 'Randevu talebiniz sekreter onayına gönderildi.' : 'Randevu başarıyla oluşturuldu.')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -269,10 +447,11 @@ function App() {
 
   // YENİ EKLENEN İPTAL ETME FONKSİYONU
   const handleCancelAppointment = async (id) => {
+    if (saving) return
     if (window.confirm("Bu randevuyu iptal etmek istediğinize emin misiniz?")) {
       try {
         setSaving(true)
-        const response = await fetch(`${API_URL}/appointments/${id}/cancel`, {
+        const response = await fetch(`${API_URL}/appointments/${id}/cancel?user_id=${user.id}`, {
           method: 'PUT',
         })
         if (!response.ok) {
@@ -289,8 +468,42 @@ function App() {
     }
   }
 
+  const handleAppointmentDecision = async (id, decision) => {
+    if (saving) return
+    try {
+      setSaving(true)
+      const response = await fetch(`${API_URL}/appointments/${id}/${decision}?user_id=${user.id}`, { method: 'PATCH' })
+      if (!response.ok) throw new Error(await getErrorMessage(response, 'Randevu işlemi tamamlanamadı.'))
+      const updated = await response.json()
+      setAppointments((previous) => previous.map((item) => item.id === updated.id ? updated : item))
+      setSuccessMessage(decision === 'approve' ? 'Randevu onaylandı.' : 'Randevu reddedildi.')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleStartExamination = async (appointment) => {
+    if (saving) return
+    try {
+      setSaving(true)
+      const response = await fetch(`${API_URL}/appointments/${appointment.id}/status?status=Muayenede&user_id=${user.id}`, { method: 'PATCH' })
+      if (!response.ok) throw new Error(await getErrorMessage(response, 'Muayene başlatılamadı.'))
+      const updated = await response.json()
+      setAppointments((previous) => previous.map((item) => item.id === updated.id ? updated : item))
+      setSelectedAppointment(updated)
+      setIsExaminationModalOpen(true)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const handleCreateExamination = async (event) => {
     event.preventDefault()
+    if (saving) return
     if (!selectedAppointment) return
     setError('')
     setSuccessMessage('')
@@ -307,7 +520,7 @@ function App() {
 
     try {
       setSaving(true)
-      const recordResponse = await fetch(`${API_URL}/medical-records/`, {
+      const recordResponse = await fetch(`${API_URL}/medical-records/?user_id=${user.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -323,7 +536,7 @@ function App() {
       setMedicalRecords((previous) => [...previous, record])
 
       if (examinationForm.medicine_name.trim()) {
-        const prescriptionResponse = await fetch(`${API_URL}/prescriptions/`, {
+        const prescriptionResponse = await fetch(`${API_URL}/prescriptions/?user_id=${user.id}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -381,54 +594,100 @@ function App() {
     ? new Date(value).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })
     : '-'
 
+  if (!user) {
+    return (
+      <LoginScreen
+        form={loginForm}
+        onChange={(event) => setLoginForm((previous) => ({ ...previous, [event.target.name]: event.target.value }))}
+        onSubmit={handleLogin}
+        error={error}
+        saving={saving}
+      />
+    )
+  }
+
   return (
     <main style={styles.page}>
-      <header style={styles.header}>
+      <header className="heroHeader" style={styles.header} data-reveal="up">
         <div>
           <p style={styles.eyebrow}>HASTANE BİLGİ YÖNETİM SİSTEMİ</p>
           <h1 style={styles.title}>HBYS Yönetim Paneli</h1>
           <p style={styles.subtitle}>Randevu, muayene ve reçete süreçlerini yönetin.</p>
         </div>
-        <div style={styles.headerRight}>
-          <div style={styles.clockBox}>
-            <strong>{currentDateTime.toLocaleTimeString('tr-TR')}</strong>
-            <span>{currentDateTime.toLocaleDateString('tr-TR')}</span>
-          </div>
-          <div style={styles.headerIcon}>🏥</div>
+        <div style={styles.heroMeta}>
+          <strong>{currentDateTime.toLocaleTimeString('tr-TR')}</strong>
+          <span>{currentDateTime.toLocaleDateString('tr-TR')}</span>
         </div>
       </header>
 
-      <section style={styles.roleBar}>
-        <span style={styles.roleLabel}>Aktif kullanıcı görünümü:</span>
-        <button
-          type="button"
-          onClick={() => setRole('secretary')}
-          style={role === 'secretary' ? styles.activeRoleButton : styles.roleButton}
-        >
-          Hasta / Sekreter
-        </button>
-        <button
-          type="button"
-          onClick={() => setRole('doctor')}
-          style={role === 'doctor' ? styles.activeRoleButton : styles.roleButton}
-        >
-          Doktor
-        </button>
+      <section style={styles.roleBar} data-reveal="up">
+        <span style={styles.roleLabel}>{user.full_name} · {user.role === 'doktor' ? 'Doktor' : user.role === 'yonetici' ? 'Yönetici' : user.role === 'hasta' ? 'Hasta' : 'Sekreter'}</span>
+        <span style={styles.roleLabel}>Aktif panel: {role === 'doctor' ? 'Doktor' : role === 'patient' ? 'Hasta' : role === 'admin' ? 'Yönetim' : 'Sekreter'}</span>
+        <button type="button" onClick={() => setIsPasswordModalOpen(true)} style={styles.roleButton}>Şifre Değiştir</button>
+        <button type="button" onClick={handleLogout} style={styles.roleButton}>Çıkış Yap</button>
       </section>
 
       {loading && <div style={styles.infoMessage}>Veriler yükleniyor...</div>}
-      {error && <div style={styles.errorMessage}>{error}</div>}
-      {successMessage && <div style={styles.successMessage}>{successMessage}</div>}
+      {error && <Toast type="error" message={error} onClose={() => setError('')} />}
+      {successMessage && <Toast type="success" message={successMessage} onClose={() => setSuccessMessage('')} />}
 
-      <section style={styles.dashboard}>
+      <section style={styles.dashboard} data-reveal="up">
         <StatCard icon="👥" title="Hastalar" value={patients.length} text="Kayıtlı hasta" />
         <StatCard icon="📅" title="Randevular" value={appointments.length} text="Toplam randevu" />
-        <StatCard icon="💊" title="Reçeteler" value={prescriptions.length} text="Kayıtlı reçete" />
+        <StatCard icon="🗓️" title="Bugün" value={appointmentStats.today} text="Bugünkü randevu" />
+        <StatCard icon="⏳" title="Bekleyen" value={appointmentStats.pending} text="Bekleyen randevu" />
+        <StatCard icon="✅" title="Tamamlanan" value={appointmentStats.completed} text="Tamamlanan randevu" />
+        <StatCard icon="💊" title="Reçeteler" value={prescriptions.length} text={`${appointmentStats.cancelled} iptal randevu`} />
       </section>
 
-      {role === 'secretary' ? (
+      {role === 'admin' ? (
+        <section style={styles.panelWide} data-reveal="up">
+          <div style={styles.actionPanelInner}>
+            <div>
+              <h2 style={styles.panelTitle}>Sistem Audit Logları</h2>
+              <p style={styles.formDescription}>Kullanıcıların sistem üzerindeki önemli işlemlerini ve zaman bilgilerini izleyin.</p>
+            </div>
+            <span style={styles.doctorBadge}>{auditLogs.length} işlem</span>
+          </div>
+          {auditLogs.length === 0 ? <p style={styles.emptyText}>Henüz kayıtlı işlem bulunmuyor.</p> : (
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead><tr><th style={styles.th}>Tarih</th><th style={styles.th}>Kullanıcı ID</th><th style={styles.th}>İşlem</th><th style={styles.th}>Varlık</th><th style={styles.th}>Kayıt ID</th><th style={styles.th}>Detay</th></tr></thead>
+                <tbody>{auditLogs.map((log) => <tr key={log.id}><td style={styles.td}>{formatDate(log.created_at)}</td><td style={styles.td}>{log.user_id || '-'}</td><td style={styles.td}><span style={styles.waitingBadge}>{log.action}</span></td><td style={styles.td}>{log.entity_type}</td><td style={styles.td}>{log.entity_id || '-'}</td><td style={styles.td}>{log.details || '-'}</td></tr>)}</tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : role === 'patient' ? (
+        <section style={styles.panelWide} data-reveal="up">
+          <div style={styles.actionPanelInner}>
+            <div>
+              <h2 style={styles.panelTitle}>Hasta Panelim</h2>
+              <p style={styles.formDescription}>Kişisel randevularınızı ve sağlık kayıtlarınızı buradan takip edebilirsiniz.</p>
+            </div>
+            <span style={styles.doctorBadge}>Hasta hesabı</span>
+            <button type="button" onClick={() => { setAppointmentForm({ ...emptyAppointment, patient_id: user.patient_id || '' }); setIsAppointmentModalOpen(true) }} style={styles.primaryButton}>+ Randevu Talep Et</button>
+          </div>
+          {patients[0] && <div style={styles.patientRow}><strong>{patients[0].first_name} {patients[0].last_name}</strong><small>TC: {patients[0].tc_no.slice(0, 3)}******{patients[0].tc_no.slice(-2)}</small></div>}
+          <h3 style={styles.sectionTitle}>Randevularım</h3>
+          {filteredAppointments.length === 0 ? <p style={styles.emptyText}>Henüz randevunuz bulunmuyor.</p> : <AppointmentTable appointments={filteredAppointments} getPatientName={getPatientName} getDoctorName={getDoctorName} getDepartmentName={getDepartmentName} formatDate={formatDate} onCancel={handleCancelAppointment} />}
+          <h3 style={styles.sectionTitle}>Muayene ve Reçete Geçmişim</h3>
+          {medicalRecords.length === 0 ? <p style={styles.emptyText}>Henüz tamamlanmış bir muayene kaydınız bulunmuyor.</p> : (
+            <div style={styles.doctorAppointmentList}>
+              {medicalRecords.map((record) => {
+                const appointment = appointments.find((item) => item.id === record.appointment_id)
+                const recordPrescriptions = prescriptions.filter((item) => item.medical_record_id === record.id)
+                return <div key={record.id} style={styles.doctorAppointmentCard}>
+                  <div><strong style={styles.appointmentPatient}>{record.diagnosis}</strong><p style={styles.appointmentDetails}>{appointment ? `${getDoctorName(appointment.doctor_id)} · ${formatDate(record.created_at)}` : formatDate(record.created_at)}</p><span>{record.notes || 'Muayene notu bulunmuyor.'}</span></div>
+                  <div>{recordPrescriptions.length === 0 ? <span style={styles.waitingBadge}>Reçete yok</span> : recordPrescriptions.map((item) => <div key={item.id} style={{ marginBottom: 5 }}><strong>{item.medicine_name}</strong><br /><small>{item.dosage} · {item.days} gün</small></div>)}</div>
+                </div>
+              })}
+            </div>
+          )}
+        </section>
+      ) : role === 'secretary' ? (
         <>
-          <section style={styles.actionPanel}>
+          <section style={styles.actionPanel} data-reveal="up">
             <div>
               <h2 style={styles.panelTitle}>Randevu Yönetimi</h2>
               <p style={styles.formDescription}>Hasta veya sekreter, hastayı uygun doktor ve polikliniğe yönlendirir.</p>
@@ -438,7 +697,7 @@ function App() {
             </button>
           </section>
 
-          <section style={styles.contentGrid}>
+          <section style={styles.contentGrid} data-reveal="up">
             <div style={styles.panelWide}>
               <div style={styles.panelHeading}>
                 <h2 style={styles.panelTitle}>Randevu Listesi</h2>
@@ -454,7 +713,9 @@ function App() {
                   getDoctorName={getDoctorName} 
                   getDepartmentName={getDepartmentName} 
                   formatDate={formatDate} 
-                  onCancel={handleCancelAppointment} 
+                  onCancel={handleCancelAppointment}
+                  onApprove={(id) => handleAppointmentDecision(id, 'approve')}
+                  onReject={(id) => handleAppointmentDecision(id, 'reject')}
                 />
               )}
             </div>
@@ -473,26 +734,58 @@ function App() {
             </div>
           </section>
 
-          <section style={styles.formPanel}>
+          <section style={styles.calendarPanel} data-reveal="up">
+            <div style={styles.panelHeading}>
+              <div>
+                <h2 style={styles.panelTitle}>Randevu Takvimi</h2>
+                <p style={styles.formDescription}>Seçilen güne ait randevuları saat sırasına göre görüntüleyin.</p>
+              </div>
+              <Input label="Gün seçin" type="date" value={calendarDate} onChange={(event) => setCalendarDate(event.target.value)} />
+            </div>
+            {calendarAppointments.length === 0 ? <p style={styles.emptyText}>Bu gün için randevu bulunmuyor.</p> : (
+              <div style={styles.calendarGrid}>
+                {calendarAppointments.map((appointment) => <div key={appointment.id} style={styles.calendarItem}>
+                  <strong style={styles.calendarTime}>{new Date(appointment.appointment_date).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</strong>
+                  <div><strong>{getPatientName(appointment.patient_id)}</strong><small style={styles.calendarMeta}>{getDoctorName(appointment.doctor_id)} · {getDepartmentName(appointment.department_id)}</small></div>
+                  <span style={appointment.status === 'Tamamlandı' ? styles.completedBadge : appointment.status === 'Reddedildi' || appointment.status === 'İptal Edildi' ? styles.cancelledBadge : styles.waitingBadge}>{appointment.status}</span>
+                </div>)}
+              </div>
+            )}
+          </section>
+
+          <section style={styles.formPanel} data-reveal="up">
             <h2 style={styles.formTitle}>Yeni Hasta Kaydı</h2>
+            {newPatientCredentials && (
+              <div style={{ ...styles.infoMessage, textAlign: 'left', marginBottom: 18 }}>
+                <strong>{newPatientCredentials.fullName} için giriş bilgileri</strong>
+                <br />Kullanıcı adı: <strong>{newPatientCredentials.username}</strong>
+                <br />Geçici şifre: <strong>{newPatientCredentials.password}</strong>
+                <br /><small>Bu bilgileri hastaya güvenli şekilde iletin.</small>
+                <button type="button" onClick={() => setNewPatientCredentials(null)} style={{ ...styles.secondaryButton, marginTop: 10 }}>Bilgiyi Kapat</button>
+              </div>
+            )}
             <form onSubmit={handleAddPatient} style={styles.form}>
               <Input label="TC Kimlik No" name="tc_no" value={patientForm.tc_no} onChange={handlePatientChange} placeholder="11 haneli TC no" maxLength={11} required />
               <Input label="Ad" name="first_name" value={patientForm.first_name} onChange={handlePatientChange} placeholder="Hasta adı" required />
               <Input label="Soyad" name="last_name" value={patientForm.last_name} onChange={handlePatientChange} placeholder="Hasta soyadı" required />
               <Input label="Telefon" name="phone" value={patientForm.phone} onChange={handlePatientChange} placeholder="05XXXXXXXXX" required />
               <label style={styles.label}>Cinsiyet<select name="gender" value={patientForm.gender} onChange={handlePatientChange} style={styles.input}><option>Kadın</option><option>Erkek</option><option>Belirtmek istemiyor</option></select></label>
-              <button type="submit" disabled={saving} style={styles.saveButton}>{saving ? 'Kaydediliyor...' : 'Hasta Kaydet'}</button>
+              <button type="submit" disabled={saving} style={saving ? styles.disabledButton : styles.saveButton}>{saving && <Spinner />}{saving ? 'Kaydediliyor...' : 'Hasta Kaydet'}</button>
             </form>
           </section>
         </>
       ) : (
-        <section style={styles.panelWide}>
+        <section style={styles.panelWide} data-reveal="up">
           <div style={styles.actionPanelInner}>
             <div>
               <h2 style={styles.panelTitle}>Doktor Randevuları</h2>
-              <p style={styles.formDescription}>Doktor, kendisine gelen randevuyu açarak muayene ve reçete kaydı oluşturur.</p>
+              <p style={styles.formDescription}>Doktor, kendisine ait randevuları açarak muayene ve reçete kaydı oluşturur.</p>
             </div>
             <span style={styles.doctorBadge}>Doktor çalışma alanı</span>
+          </div>
+          <div style={styles.calendarToolbar}><strong>Günlük takvim</strong><Input label="" type="date" value={calendarDate} onChange={(event) => setCalendarDate(event.target.value)} /></div>
+          <div style={styles.calendarGrid}>
+            {calendarAppointments.length === 0 ? <p style={styles.emptyText}>Seçilen gün için randevu bulunmuyor.</p> : calendarAppointments.map((appointment) => <div key={appointment.id} style={styles.calendarItem}><strong style={styles.calendarTime}>{new Date(appointment.appointment_date).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</strong><div><strong>{getPatientName(appointment.patient_id)}</strong><small style={styles.calendarMeta}>{appointment.status}</small></div></div>)}
           </div>
           <SearchBox value={appointmentSearch} onChange={setAppointmentSearch} placeholder="Hasta veya randevu ara..." />
           {filteredAppointments.length === 0 ? (
@@ -510,12 +803,14 @@ function App() {
                     </div>
                     {hasRecord || appointment.status === 'Tamamlandı' ? (
                       <span style={styles.completedBadge}>Tamamlandı</span>
-                    ) : appointment.status === 'İptal' ? (
+                    ) : appointment.status === 'İptal' || appointment.status === 'İptal Edildi' ? (
                       <span style={styles.cancelledBadge}>İptal Edildi</span>
-                    ) : (
-                      <button type="button" onClick={() => { setSelectedAppointment(appointment); setIsExaminationModalOpen(true) }} style={styles.primaryButton}>
-                        Muayene Et
+                    ) : appointment.status === 'Onaylandı' || appointment.status === 'Bekliyor' ? (
+                      <button type="button" onClick={() => handleStartExamination(appointment)} style={styles.primaryButton}>
+                        Muayeneye Al
                       </button>
+                    ) : (
+                      <span style={styles.waitingBadge}>Sekreter onayı bekleniyor</span>
                     )}
                   </div>
                 )
@@ -530,7 +825,7 @@ function App() {
           {error && <p style={styles.modalError}>{error}</p>}
           <form onSubmit={handleCreateAppointment} style={styles.modalForm}>
             <Select label="Hasta" name="patient_id" value={appointmentForm.patient_id} onChange={updateForm(setAppointmentForm)} options={patients.map((item) => ({ value: item.id, label: `${item.first_name} ${item.last_name}` }))} placeholder="Hasta seçin" />
-            <Select label="Poliklinik" name="department_id" value={appointmentForm.department_id} onChange={updateForm(setAppointmentForm)} options={departments.map((item) => ({ value: item.id, label: item.name }))} placeholder="Poliklinik seçin" />
+            <Select label="Poliklinik" name="department_id" value={appointmentForm.department_id} onChange={updateForm(setAppointmentForm)} options={visibleDepartments.map((item) => ({ value: item.id, label: item.name }))} placeholder="Poliklinik seçin" />
             <Select 
   label="Doktor" 
   name="doctor_id" 
@@ -562,152 +857,20 @@ function App() {
           </form>
         </Modal>
       )}
+
+      {isPasswordModalOpen && (
+        <Modal title="Şifre Değiştir" onClose={() => setIsPasswordModalOpen(false)}>
+          <p style={styles.modalHint}>Güvenliğiniz için en az 8 karakterli, tahmin edilmesi zor bir şifre belirleyin.</p>
+          <form onSubmit={handleChangePassword} style={styles.modalForm}>
+            <Input label="Mevcut şifre" name="current_password" type="password" value={passwordForm.current_password} onChange={(event) => setPasswordForm((previous) => ({ ...previous, current_password: event.target.value }))} required autoComplete="current-password" />
+            <Input label="Yeni şifre" name="new_password" type="password" minLength={8} value={passwordForm.new_password} onChange={(event) => setPasswordForm((previous) => ({ ...previous, new_password: event.target.value }))} required autoComplete="new-password" />
+            <Input label="Yeni şifre tekrarı" name="confirm_password" type="password" minLength={8} value={passwordForm.confirm_password} onChange={(event) => setPasswordForm((previous) => ({ ...previous, confirm_password: event.target.value }))} required autoComplete="new-password" />
+            <ModalFooter onClose={() => setIsPasswordModalOpen(false)} saving={saving} submitText="Şifreyi Güncelle" />
+          </form>
+        </Modal>
+      )}
     </main>
   )
-}
-
-function StatCard({ icon, title, value, text }) {
-  return <div style={styles.card}><div style={styles.cardHeader}><span style={styles.cardIcon}>{icon}</span><span style={styles.cardTitle}>{title}</span></div><strong style={styles.number}>{value}</strong><p style={styles.cardText}>{text}</p></div>
-}
-
-function Input({ label, ...props }) {
-  return <label style={styles.label}>{label}<input {...props} style={{ ...styles.input, ...(props.style || {}) }} /></label>
-}
-
-function Textarea({ label, ...props }) {
-  return <label style={styles.label}>{label}<textarea {...props} style={styles.textarea} /></label>
-}
-
-function Select({ label, options, placeholder, ...props }) {
-  return <label style={styles.label}>{label}<select {...props} style={styles.input} required><option value="">{placeholder}</option>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-}
-
-function SearchBox({ value, onChange, placeholder }) {
-  return <div style={styles.searchBox}><span style={styles.searchIcon}>⌕</span><input type="search" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} style={styles.searchInput} /></div>
-}
-
-function AppointmentTable({ appointments, getPatientName, getDoctorName, getDepartmentName, formatDate, onCancel }) {
-  return (
-    <div style={styles.tableWrap}>
-      <table style={styles.table}>
-        <thead>
-          <tr>
-            <th style={styles.th}>Hasta</th>
-            <th style={styles.th}>Doktor</th>
-            <th style={styles.th}>Poliklinik</th>
-            <th style={styles.th}>Tarih</th>
-            <th style={styles.th}>Durum</th>
-            <th style={styles.th}>İşlem</th>
-          </tr>
-        </thead>
-        <tbody>
-          {appointments.map((appointment) => (
-            <tr key={appointment.id}>
-              <td style={styles.td}>{getPatientName(appointment.patient_id)}</td>
-              <td style={styles.td}>{getDoctorName(appointment.doctor_id)}</td>
-              <td style={styles.td}>{getDepartmentName(appointment.department_id)}</td>
-              <td style={styles.td}>{formatDate(appointment.appointment_date)}</td>
-              <td style={styles.td}>
-                <span style={appointment.status === 'Tamamlandı' ? styles.completedBadge : appointment.status === 'İptal' ? styles.cancelledBadge : styles.waitingBadge}>
-                  {appointment.status}
-                </span>
-              </td>
-              <td style={styles.td}>
-                {appointment.status === 'Bekliyor' && (
-                  <button 
-                    onClick={() => onCancel(appointment.id)}
-                    style={styles.cancelButton}
-                  >
-                    İptal Et
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function Modal({ title, onClose, children }) {
-  return <div style={styles.modalOverlay} onClick={onClose}><div style={styles.modalContent} onClick={(event) => event.stopPropagation()}><div style={styles.modalHeader}><div><h2 style={styles.modalTitle}>{title}</h2></div><button type="button" onClick={onClose} style={styles.closeButton}>×</button></div>{children}</div></div>
-}
-
-function ModalFooter({ onClose, saving, submitText }) {
-  return <div style={styles.modalFooter}><button type="button" onClick={onClose} style={styles.secondaryButton}>Vazgeç</button><button type="submit" disabled={saving} style={styles.primaryButton}>{saving ? 'Kaydediliyor...' : submitText}</button></div>
-}
-
-const styles = {
-  page: { minHeight: '100vh', width: '100%', margin: 0, padding: '32px', boxSizing: 'border-box', backgroundColor: '#f4f7fb', color: '#1f2937', fontFamily: 'Arial, sans-serif' },
-  header: { maxWidth: '1200px', margin: '0 auto 22px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  eyebrow: { margin: '0 0 8px', color: '#2563eb', fontSize: '12px', fontWeight: 'bold', letterSpacing: '1px' },
-  title: { margin: 0, color: '#172554', fontSize: '32px' },
-  subtitle: { margin: '10px 0 0', color: '#64748b' },
-  headerIcon: { display: 'grid', placeItems: 'center', width: '62px', height: '62px', borderRadius: '18px', backgroundColor: '#dbeafe', fontSize: '30px' },
-  headerRight: { display: 'flex', alignItems: 'center', gap: '14px' },
-  clockBox: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px', color: '#172554', fontSize: '13px' },
-  roleBar: { maxWidth: '1200px', margin: '0 auto 20px', display: 'flex', alignItems: 'center', gap: '8px', padding: '8px', border: '1px solid #dbeafe', borderRadius: '10px', backgroundColor: '#eff6ff' },
-  roleLabel: { marginRight: '6px', color: '#475569', fontSize: '13px', fontWeight: 'bold' },
-  roleButton: { padding: '9px 13px', border: 0, borderRadius: '7px', color: '#475569', backgroundColor: 'transparent', cursor: 'pointer' },
-  activeRoleButton: { padding: '9px 13px', border: 0, borderRadius: '7px', color: '#fff', backgroundColor: '#2563eb', fontWeight: 'bold', cursor: 'pointer' },
-  dashboard: { maxWidth: '1200px', margin: '0 auto 20px', display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '16px' },
-  card: { padding: '20px', border: '1px solid #e2e8f0', borderRadius: '14px', backgroundColor: '#fff', boxShadow: '0 4px 14px rgba(15, 23, 42, .05)' },
-  cardHeader: { display: 'flex', alignItems: 'center', gap: '9px' },
-  cardIcon: { fontSize: '22px' },
-  cardTitle: { color: '#475569', fontWeight: 'bold' },
-  number: { display: 'block', marginTop: '12px', color: '#1d4ed8', fontSize: '32px' },
-  cardText: { margin: '3px 0 0', color: '#94a3b8' },
-  contentGrid: { maxWidth: '1200px', margin: '0 auto 20px', display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '16px' },
-  panel: { padding: '20px', border: '1px solid #e2e8f0', borderRadius: '14px', backgroundColor: '#fff' },
-  panelWide: { maxWidth: '1200px', margin: '0 auto 20px', padding: '22px', border: '1px solid #e2e8f0', borderRadius: '14px', backgroundColor: '#fff' },
-  actionPanel: { maxWidth: '1200px', margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '20px', padding: '20px', border: '1px solid #bfdbfe', borderRadius: '14px', backgroundColor: '#eff6ff' },
-  actionPanelInner: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '20px', marginBottom: '14px' },
-  panelHeading: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' },
-  panelTitle: { margin: '0 0 12px', color: '#172554', fontSize: '20px' },
-  formDescription: { margin: '0', color: '#64748b', fontSize: '14px' },
-  resultCount: { display: 'inline-grid', placeItems: 'center', minWidth: '26px', height: '26px', borderRadius: '50%', color: '#1d4ed8', backgroundColor: '#dbeafe', fontSize: '12px', fontWeight: 'bold' },
-  doctorBadge: { padding: '8px 12px', borderRadius: '999px', color: '#166534', backgroundColor: '#dcfce7', fontSize: '12px', fontWeight: 'bold' },
-  searchBox: { display: 'flex', alignItems: 'center', gap: '8px', margin: '4px 0 12px', padding: '9px 11px', border: '1px solid #e2e8f0', borderRadius: '9px', backgroundColor: '#f8fafc' },
-  searchIcon: { color: '#94a3b8', fontSize: '22px', transform: 'rotate(-20deg)' },
-  searchInput: { width: '100%', minWidth: 0, padding: 0, border: 0, outline: 0, color: '#1f2937', backgroundColor: 'transparent' },
-  patientRow: { display: 'flex', flexDirection: 'column', gap: '4px', padding: '11px 0', borderBottom: '1px solid #f1f5f9' },
-  formPanel: { maxWidth: '1200px', margin: '0 auto', padding: '22px', border: '1px solid #bbf7d0', borderRadius: '14px', backgroundColor: '#f0fdf4' },
-  formTitle: { margin: '0 0 16px', color: '#166534' },
-  form: { display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '14px', alignItems: 'end' },
-  label: { display: 'flex', flexDirection: 'column', gap: '7px', color: '#374151', fontSize: '13px', fontWeight: 'bold' },
-  input: { boxSizing: 'border-box', width: '100%', padding: '11px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', backgroundColor: '#fff', color: '#111827', fontSize: '14px' },
-  textarea: { boxSizing: 'border-box', width: '100%', padding: '11px 12px', border: '1px solid #cbd5e1', borderRadius: '8px', resize: 'vertical', backgroundColor: '#fff', color: '#111827', fontSize: '14px' },
-  saveButton: { minHeight: '42px', padding: '10px 16px', border: 0, borderRadius: '8px', color: '#fff', backgroundColor: '#16a34a', fontWeight: 'bold', cursor: 'pointer' },
-  primaryButton: { minHeight: '42px', padding: '10px 16px', border: 0, borderRadius: '8px', color: '#fff', backgroundColor: '#2563eb', fontWeight: 'bold', cursor: 'pointer' },
-  secondaryButton: { minHeight: '42px', padding: '10px 16px', border: 0, borderRadius: '8px', color: '#374151', backgroundColor: '#e5e7eb', fontWeight: 'bold', cursor: 'pointer' },
-  tableWrap: { overflowX: 'auto' },
-  table: { width: '100%', borderCollapse: 'collapse', fontSize: '13px' },
-  th: { textAlign: 'left', padding: '12px 8px', color: '#64748b', borderBottom: '1px solid #e2e8f0' },
-  td: { padding: '12px 8px', borderBottom: '1px solid #f1f5f9' },
-  waitingBadge: { padding: '5px 8px', borderRadius: '999px', color: '#92400e', backgroundColor: '#fef3c7', fontSize: '12px' },
-  completedBadge: { padding: '5px 8px', borderRadius: '999px', color: '#166534', backgroundColor: '#dcfce7', fontSize: '12px', fontWeight: 'bold' },
-  cancelledBadge: { padding: '5px 8px', borderRadius: '999px', color: '#991b1b', backgroundColor: '#fee2e2', fontSize: '12px' },
-  cancelButton: { padding: '6px 12px', backgroundColor: '#ef4444', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' },
-  doctorAppointmentList: { display: 'flex', flexDirection: 'column', gap: '12px' },
-  doctorAppointmentCard: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', padding: '16px', border: '1px solid #e2e8f0', borderRadius: '10px', backgroundColor: '#f8fafc' },
-  appointmentPatient: { display: 'block', color: '#172554', fontSize: '16px' },
-  appointmentDetails: { margin: '5px 0', color: '#475569' },
-  divider: { display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px', paddingTop: '14px', borderTop: '1px solid #e2e8f0', color: '#172554' },
-  modalOverlay: { position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px', backgroundColor: 'rgba(15, 23, 42, .48)', backdropFilter: 'blur(4px)', zIndex: 1000 },
-  modalContent: { width: '100%', maxWidth: '560px', maxHeight: '90vh', overflowY: 'auto', padding: '24px', borderRadius: '16px', backgroundColor: '#fff', boxShadow: '0 24px 60px rgba(15, 23, 42, .25)' },
-  modalHeader: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', paddingBottom: '16px', borderBottom: '1px solid #e2e8f0', marginBottom: '18px' },
-  modalTitle: { margin: 0, color: '#172554', fontSize: '22px' },
-  closeButton: { border: 0, padding: '0 4px', color: '#64748b', backgroundColor: 'transparent', fontSize: '28px', lineHeight: 1, cursor: 'pointer' },
-  modalForm: { display: 'flex', flexDirection: 'column', gap: '14px' },
-  modalRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' },
-  modalFooter: { display: 'flex', justifyContent: 'flex-end', gap: '10px', paddingTop: '18px', borderTop: '1px solid #e2e8f0' },
-  modalHint: { margin: '0 0 14px', padding: '10px 12px', borderRadius: '8px', color: '#475569', backgroundColor: '#f1f5f9', fontSize: '13px', lineHeight: 1.5 },
-  modalError: { margin: '0 0 14px', padding: '11px 12px', border: '1px solid #fecaca', borderRadius: '8px', color: '#991b1b', backgroundColor: '#fef2f2', fontSize: '13px', lineHeight: 1.4 },
-  infoMessage: { maxWidth: '1200px', margin: '0 auto 14px', padding: '12px 16px', borderRadius: '8px', color: '#1e40af', backgroundColor: '#dbeafe' },
-  errorMessage: { maxWidth: '1200px', margin: '0 auto 14px', padding: '12px 16px', borderRadius: '8px', color: '#991b1b', backgroundColor: '#fee2e2' },
-  successMessage: { maxWidth: '1200px', margin: '0 auto 14px', padding: '12px 16px', borderRadius: '8px', color: '#166534', backgroundColor: '#dcfce7' },
-  emptyText: { color: '#94a3b8' },
 }
 
 export default App
