@@ -71,10 +71,11 @@ export function AppointmentTable({
   onCancel,
   onApprove,
   onReject,
+  compact = false,
 }) {
   return (
-    <div style={styles.tableWrap}>
-      <table style={styles.table}>
+    <div style={compact ? styles.compactTableWrap : styles.tableWrap}>
+      <table style={compact ? styles.compactTable : styles.table}>
         <thead>
           <tr>
             <th style={styles.th}>Hasta</th>
@@ -230,7 +231,7 @@ export function LoginScreen({ form, onChange, onSubmit, error, saving }) {
         {error && <div style={styles.loginError}>{error}</div>}
         <form onSubmit={onSubmit} style={styles.loginForm}>
           <label style={styles.label}>
-            Kullanıcı adı
+             Kullanıcı adı
             <input style={styles.input} name="username" value={form.username} onChange={onChange} placeholder="Kullanıcı adınız" autoComplete="username" required />
           </label>
           <label style={styles.label}>

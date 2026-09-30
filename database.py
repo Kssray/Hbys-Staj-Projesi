@@ -1,6 +1,6 @@
 from sqlmodel import create_engine, Session
 
-# SQLite bağlantı cümlesi: Proje klasörünün içinde otomatik 'hbys.db' adında bir dosya oluşturur.
+
 DATABASE_URL = "sqlite:///hbys.db"
 
 # engine, Python ile veritabanı dosyamız arasında köprü kurar.

@@ -193,16 +193,25 @@ def on_startup():
 
         # Örnek gelecek randevuları ekle; aynı kayıt varsa tekrar oluşturmaz.
         appointment_plan = [
-            (0, "doktor", 1, 10, 0), (1, "goz_doktor", 2, 11, 30),
-            (2, "kardiyoloji_doktor", 3, 9, 30), (3, "cocuk_doktor", 4, 13, 0),
-            (4, "ortopedi_doktor", 5, 14, 0), (5, "dermatoloji_doktor", 6, 15, 30),
+            (0, "doktor", 1, 10, 0, "Bekliyor"), (1, "goz_doktor", 2, 11, 30, "Onaylandı"),
+            (2, "kardiyoloji_doktor", 3, 9, 30, "Bekliyor"), (3, "cocuk_doktor", 4, 13, 0, "Onaylandı"),
+            (4, "ortopedi_doktor", 5, 14, 0, "Bekliyor"), (5, "dermatoloji_doktor", 6, 15, 30, "Onaylandı"),
+            # Takvim görünümünü gerçekçi örnek verilerle zenginleştiren ek kayıtlar.
+            (6, "doktor", 1, 11, 30, "Onaylandı"), (7, "dahiliye_doktor2", 1, 14, 0, "Bekliyor"),
+            (1, "dahiliye_doktor3", 2, 9, 0, "Onaylandı"), (2, "goz_doktor2", 2, 15, 0, "Bekliyor"),
+            (3, "kardiyoloji_doktor2", 3, 10, 30, "Onaylandı"), (4, "cocuk_doktor2", 3, 14, 30, "Bekliyor"),
+            (5, "ortopedi_doktor2", 4, 9, 30, "Onaylandı"), (6, "dermatoloji_doktor2", 4, 16, 0, "Bekliyor"),
+            (7, "doktor", 5, 9, 30, "Onaylandı"), (0, "dahiliye_doktor2", 5, 13, 0, "Bekliyor"),
+            (2, "goz_doktor", 6, 10, 0, "Onaylandı"), (3, "kardiyoloji_doktor", 7, 11, 0, "Bekliyor"),
+            (4, "cocuk_doktor3", 7, 15, 30, "Onaylandı"), (5, "ortopedi_doktor3", 8, 10, 30, "Bekliyor"),
+            (6, "dermatoloji_doktor3", 8, 14, 0, "Onaylandı"), (7, "dahiliye_doktor3", 9, 16, 30, "Bekliyor"),
         ]
-        for patient_index, doctor_key, days_ahead, hour, minute in appointment_plan:
+        for patient_index, doctor_key, days_ahead, hour, minute, status in appointment_plan:
             doctor = doctors[doctor_key]
             appointment_date = (datetime.now() + timedelta(days=days_ahead + 1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
             exists = session.exec(select(Appointment).where(Appointment.patient_id == patients[patient_index].id, Appointment.doctor_id == doctor.id, Appointment.appointment_date == appointment_date)).first()
             if not exists:
-                session.add(Appointment(patient_id=patients[patient_index].id, doctor_id=doctor.id, department_id=doctor.department_id, appointment_date=appointment_date, status="Bekliyor"))
+                session.add(Appointment(patient_id=patients[patient_index].id, doctor_id=doctor.id, department_id=doctor.department_id, appointment_date=appointment_date, status=status))
         session.commit()
 
 @app.get("/")
