@@ -76,3 +76,16 @@ class AuditLog(SQLModel, table=True):
     entity_id: Optional[int] = None
     details: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SMSReminder(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    appointment_id: int = Field(foreign_key="appointment.id", index=True)
+    patient_id: int = Field(foreign_key="patient.id", index=True)
+    phone: str
+    reminder_type: str
+    message: str
+    scheduled_for: datetime
+    status: str = Field(default="Bekliyor")
+    sent_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)

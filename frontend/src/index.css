@@ -119,6 +119,23 @@ button:not(:disabled):active {
   transform: translateY(0);
 }
 
+.patientCard:hover {
+  border-color: #bae6fd !important;
+  box-shadow: 0 10px 24px rgba(2, 132, 199, .1) !important;
+}
+
+button[style].patientListButton,
+.patientListButton {
+  appearance: none;
+}
+
+.patientListButton:hover,
+.patientListButton:focus-visible {
+  border-color: #7dd3fc !important;
+  background-color: #f0f9ff !important;
+  box-shadow: 0 5px 14px rgba(2, 132, 199, .08) !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -167,6 +184,10 @@ input[type='search']::-webkit-search-cancel-button {
 @media (max-width: 900px) {
   body {
     min-width: 0;
+  }
+
+  .patientWorkspace {
+    grid-template-columns: 1fr !important;
   }
 }
 
@@ -226,5 +247,14 @@ input[type='search']::-webkit-search-cancel-button {
   .clinicStatsGrid,
   .clinicDoctorGrid {
     grid-template-columns: 1fr !important;
+  }
+
+  .patientCardInfoGrid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .patientCardFooter {
+    align-items: stretch !important;
+    flex-direction: column !important;
   }
 }

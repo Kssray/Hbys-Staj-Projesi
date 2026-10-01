@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlmodel import SQLModel, Session, select
 from sqlalchemy import inspect, text
 from database import engine, get_session
-from models import User, Patient, Department, Doctor, Appointment, MedicalRecord, Prescription, AuditLog
+from models import User, Patient, Department, Doctor, Appointment, MedicalRecord, Prescription, AuditLog, SMSReminder
 
 app = FastAPI(title="HBYS Staj Projesi", version="1.0")
 
@@ -36,6 +36,72 @@ class PatientCreateResponse(BaseModel):
     patient: Patient
     username: str
     temporary_password: str
+
+
+class AppointmentRescheduleRequest(BaseModel):
+    appointment_date: datetime
+
+
+def validate_appointment_working_hours(appointment_date: datetime):
+    minute_of_day = appointment_date.hour * 60 + appointment_date.minute
+    if minute_of_day < 8 * 60 or minute_of_day > 17 * 60 + 30:
+        raise HTTPException(status_code=422, detail="Randevu saati 08:00 ile 17:30 arasında olmalıdır.")
+    if appointment_date.minute not in {0, 30}:
+        raise HTTPException(status_code=422, detail="Randevular yalnızca tam veya yarım saatlere oluşturulabilir.")
+
+
+def create_demo_sms_reminders(session: Session, appointment: Appointment, replace_pending: bool = False):
+    if appointment.status in {"Talep Edildi", "İptal", "İptal Edildi", "Reddedildi", "Tamamlandı", "Gelmedi"}:
+        return []
+    patient = session.get(Patient, appointment.patient_id)
+    doctor = session.get(Doctor, appointment.doctor_id)
+    department = session.get(Department, appointment.department_id)
+    if not patient or not patient.phone:
+        return []
+
+    if replace_pending:
+        pending = session.exec(select(SMSReminder).where(
+            SMSReminder.appointment_id == appointment.id,
+            SMSReminder.status == "Bekliyor",
+        )).all()
+        for reminder in pending:
+            session.delete(reminder)
+        session.commit()
+
+    appointment_text = appointment.appointment_date.strftime("%d.%m.%Y %H:%M")
+    doctor_name = f"Dr. {doctor.first_name} {doctor.last_name}" if doctor else "doktorunuz"
+    department_name = department.name if department else "poliklinik"
+    templates = [
+        ("24 Saat Önce", appointment.appointment_date - timedelta(hours=24)),
+        ("2 Saat Önce", appointment.appointment_date - timedelta(hours=2)),
+    ]
+    created = []
+    for reminder_type, scheduled_for in templates:
+        existing = session.exec(select(SMSReminder).where(
+            SMSReminder.appointment_id == appointment.id,
+            SMSReminder.reminder_type == reminder_type,
+        )).first()
+        if existing or scheduled_for <= datetime.now():
+            continue
+        message = (
+            f"Sayın {patient.first_name} {patient.last_name}, {appointment_text} tarihindeki "
+            f"{department_name} randevunuzu hatırlatırız. Doktor: {doctor_name}. HBYS"
+        )
+        reminder = SMSReminder(
+            appointment_id=appointment.id,
+            patient_id=patient.id,
+            phone=patient.phone,
+            reminder_type=reminder_type,
+            message=message,
+            scheduled_for=scheduled_for,
+        )
+        session.add(reminder)
+        created.append(reminder)
+    if created:
+        session.commit()
+        for reminder in created:
+            session.refresh(reminder)
+    return created
 
 # Frontend (React) bağlantısı için CORS izni
 app.add_middleware(
@@ -95,8 +161,10 @@ def on_startup():
             ("Bora", "Kılıç", "Dahiliye", "dahiliye_doktor3"),
             ("Ayşe", "Demir", "Göz Hastalıkları", "goz_doktor"),
             ("Burak", "Öz", "Göz Hastalıkları", "goz_doktor2"),
+            ("Leyla", "Uçar", "Göz Hastalıkları", "goz_doktor3"),
             ("Mehmet", "Kaya", "Kardiyoloji", "kardiyoloji_doktor"),
             ("İpek", "Çetin", "Kardiyoloji", "kardiyoloji_doktor2"),
+            ("Kerem", "Ersoy", "Kardiyoloji", "kardiyoloji_doktor3"),
             ("Elif", "Şahin", "Çocuk Sağlığı", "cocuk_doktor"),
             ("Deniz", "Aksoy", "Çocuk Sağlığı", "cocuk_doktor2"),
             ("Sibel", "Yıldız", "Çocuk Sağlığı", "cocuk_doktor3"),
@@ -128,6 +196,13 @@ def on_startup():
             ("cocuk_sekreter", "cocuk123", "sekreter", "Çocuk Sağlığı Sekreteri", departments["Çocuk Sağlığı"].id, None),
             ("ortopedi_sekreter", "ortopedi123", "sekreter", "Ortopedi Sekreteri", departments["Ortopedi"].id, None),
             ("dermatoloji_sekreter", "derma123", "sekreter", "Dermatoloji Sekreteri", departments["Dermatoloji"].id, None),
+            # Sunumda farklı poliklinik yetkilerini göstermek için isimli demo sekreterleri.
+            ("dahiliye_demo", "demo1234", "sekreter", "Elif Kaya", departments["Dahiliye"].id, None),
+            ("goz_demo", "demo1234", "sekreter", "Melis Aydın", departments["Göz Hastalıkları"].id, None),
+            ("kardiyo_demo", "demo1234", "sekreter", "Zeynep Çelik", departments["Kardiyoloji"].id, None),
+            ("cocuk_demo", "demo1234", "sekreter", "Buse Yıldız", departments["Çocuk Sağlığı"].id, None),
+            ("ortopedi_demo", "demo1234", "sekreter", "Emre Şahin", departments["Ortopedi"].id, None),
+            ("derma_demo", "demo1234", "sekreter", "Seda Arslan", departments["Dermatoloji"].id, None),
         ]
         for username, password, role, full_name, department_id, doctor_id in user_seed:
             if not session.exec(select(User).where(User.username == username)).first():
@@ -135,9 +210,18 @@ def on_startup():
 
         for first_name, last_name, department_name, username in doctor_seed:
             doctor = doctors[username]
-            if not session.exec(select(User).where(User.username == username)).first():
-                password = "doktor123" if username == "doktor" else f"HBYS{doctor.id:04d}"
+            doctor_user = session.exec(select(User).where(User.username == username)).first()
+            password = "doktor123" if username == "doktor" else "demo1234"
+            if not doctor_user:
                 session.add(User(username=username, password_hash=hashlib.sha256(password.encode()).hexdigest(), role="doktor", full_name=f"Dr. {first_name} {last_name}", department_id=departments[department_name].id, doctor_id=doctor.id))
+            elif username != "doktor":
+                old_demo_hash = hashlib.sha256(f"HBYS{doctor.id:04d}".encode()).hexdigest()
+                if doctor_user.password_hash == old_demo_hash:
+                    doctor_user.password_hash = hashlib.sha256("demo1234".encode()).hexdigest()
+                doctor_user.department_id = departments[department_name].id
+                doctor_user.doctor_id = doctor.id
+                doctor_user.full_name = f"Dr. {first_name} {last_name}"
+                session.add(doctor_user)
         session.commit()
 
         # Önceki sürümde oluşturulmuş kullanıcıları da ilişkilerine bağla.
@@ -175,16 +259,34 @@ def on_startup():
             session.add(User(username="hasta", password_hash=hashlib.sha256("hasta123".encode()).hexdigest(), role="hasta", full_name="Kübra Yılmaz", patient_id=patients[0].id))
             session.commit()
 
-        # Seed edilmiş diğer hastalar için de giriş hesabı oluştur.
-        # Demo hesabı hasta/hasta123 korunur; yeni hesaplar hasta0002 biçimindedir.
-        for patient in patients[1:]:
+        # Sunumda farklı hasta profillerini göstermek için kolay hatırlanan demo hesapları.
+        patient_account_seed = [
+            (patients[1], "ugur_hasta", "demo1234"),
+            (patients[2], "nur_hasta", "demo1234"),
+            (patients[3], "mert_hasta", "demo1234"),
+            (patients[4], "seda_hasta", "demo1234"),
+            (patients[5], "emir_hasta", "demo1234"),
+            (patients[6], "derya_hasta", "demo1234"),
+            (patients[7], "ece_hasta", "demo1234"),
+        ]
+        for patient, username, password in patient_account_seed:
             linked_user = session.exec(select(User).where(User.patient_id == patient.id)).first()
-            username = f"hasta{patient.id:04d}"
-            if not linked_user and not session.exec(select(User).where(User.username == username)).first():
-                temporary_password = f"HBYS{patient.tc_no[-4:]}"
+            username_owner = session.exec(select(User).where(User.username == username)).first()
+            if username_owner:
+                username_owner.patient_id = patient.id
+                username_owner.role = "hasta"
+                username_owner.full_name = f"{patient.first_name} {patient.last_name}"
+                session.add(username_owner)
+            elif linked_user and linked_user.username.startswith("hasta"):
+                # Eski hasta0002 biçimindeki demo hesabını okunabilir kullanıcı adına geçir.
+                linked_user.username = username
+                linked_user.password_hash = hashlib.sha256(password.encode()).hexdigest()
+                linked_user.full_name = f"{patient.first_name} {patient.last_name}"
+                session.add(linked_user)
+            elif not linked_user:
                 session.add(User(
                     username=username,
-                    password_hash=hashlib.sha256(temporary_password.encode()).hexdigest(),
+                    password_hash=hashlib.sha256(password.encode()).hexdigest(),
                     role="hasta",
                     full_name=f"{patient.first_name} {patient.last_name}",
                     patient_id=patient.id,
@@ -213,6 +315,11 @@ def on_startup():
             if not exists:
                 session.add(Appointment(patient_id=patients[patient_index].id, doctor_id=doctor.id, department_id=doctor.department_id, appointment_date=appointment_date, status=status))
         session.commit()
+
+        # Mevcut ve yeni gelecek randevular için eksik demo SMS kayıtlarını hazırla.
+        future_appointments = session.exec(select(Appointment).where(Appointment.appointment_date > datetime.now())).all()
+        for appointment in future_appointments:
+            create_demo_sms_reminders(session, appointment)
 
 @app.get("/")
 def read_root():
@@ -345,6 +452,8 @@ def create_appointment(appointment: Appointment, session: Session = Depends(get_
             detail="Geçmiş bir tarih ve saate randevu alınamaz.",
         )
 
+    validate_appointment_working_hours(appointment.appointment_date)
+
     # İptal edilmiş randevular aynı saate yeniden randevu alınmasına engel olmaz.
     doctor_conflict = session.exec(
         select(Appointment).where(
@@ -379,6 +488,7 @@ def create_appointment(appointment: Appointment, session: Session = Depends(get_
     session.refresh(appointment)
     session.add(AuditLog(action="RANDEVU_OLUSTURULDU", entity_type="Appointment", entity_id=appointment.id, details=f"Durum: {appointment.status}"))
     session.commit()
+    create_demo_sms_reminders(session, appointment)
     return appointment
 
 @app.get("/appointments/", response_model=list[Appointment])
@@ -405,6 +515,73 @@ def get_appointment(appointment_id: int, session: Session = Depends(get_session)
     return appointment
 
 
+@app.patch("/appointments/{appointment_id}/reschedule", response_model=Appointment)
+def reschedule_appointment(
+    appointment_id: int,
+    payload: AppointmentRescheduleRequest,
+    user_id: int,
+    session: Session = Depends(get_session),
+):
+    appointment = session.get(Appointment, appointment_id)
+    user = session.get(User, user_id)
+    if not appointment or not user:
+        raise HTTPException(status_code=404, detail="Randevu veya kullanıcı bulunamadı.")
+
+    is_department_secretary = user.role == "sekreter" and user.department_id == appointment.department_id
+    if not is_department_secretary and user.role != "yonetici":
+        raise HTTPException(status_code=403, detail="Bu randevuyu değiştirme yetkiniz yok.")
+
+    terminal_statuses = {"Muayenede", "Tamamlandı", "İptal", "İptal Edildi", "Reddedildi", "Gelmedi"}
+    if appointment.status in terminal_statuses:
+        raise HTTPException(status_code=409, detail=f"{appointment.status} durumundaki randevu yeniden planlanamaz.")
+
+    new_date = payload.appointment_date
+    if new_date.tzinfo is not None:
+        new_date = new_date.astimezone().replace(tzinfo=None)
+    if new_date < datetime.now():
+        raise HTTPException(status_code=400, detail="Randevu geçmiş bir tarih veya saate taşınamaz.")
+
+    validate_appointment_working_hours(new_date)
+
+    doctor_conflict = session.exec(
+        select(Appointment).where(
+            Appointment.id != appointment.id,
+            Appointment.doctor_id == appointment.doctor_id,
+            Appointment.appointment_date == new_date,
+            Appointment.status.notin_(["İptal", "İptal Edildi", "Reddedildi"]),
+        )
+    ).first()
+    if doctor_conflict:
+        raise HTTPException(status_code=409, detail="Doktorun seçilen tarih ve saatte başka bir randevusu var.")
+
+    patient_conflict = session.exec(
+        select(Appointment).where(
+            Appointment.id != appointment.id,
+            Appointment.patient_id == appointment.patient_id,
+            Appointment.appointment_date == new_date,
+            Appointment.status.notin_(["İptal", "İptal Edildi", "Reddedildi"]),
+        )
+    ).first()
+    if patient_conflict:
+        raise HTTPException(status_code=409, detail="Hastanın seçilen tarih ve saatte başka bir randevusu var.")
+
+    previous_date = appointment.appointment_date
+    appointment.appointment_date = new_date
+    session.add(appointment)
+    session.commit()
+    session.refresh(appointment)
+    session.add(AuditLog(
+        user_id=user.id,
+        action="RANDEVU_YENIDEN_PLANLANDI",
+        entity_type="Appointment",
+        entity_id=appointment.id,
+        details=f"{previous_date.isoformat()} -> {new_date.isoformat()}",
+    ))
+    session.commit()
+    create_demo_sms_reminders(session, appointment, replace_pending=True)
+    return appointment
+
+
 @app.put("/appointments/{appointment_id}/cancel", response_model=Appointment)
 def cancel_appointment(appointment_id: int, user_id: int | None = None, session: Session = Depends(get_session)):
     appointment = session.get(Appointment, appointment_id)
@@ -417,6 +594,13 @@ def cancel_appointment(appointment_id: int, user_id: int | None = None, session:
     session.commit()
     session.refresh(appointment)
     session.add(AuditLog(user_id=user_id, action="RANDEVU_IPTAL_EDILDI", entity_type="Appointment", entity_id=appointment.id))
+    pending_reminders = session.exec(select(SMSReminder).where(
+        SMSReminder.appointment_id == appointment.id,
+        SMSReminder.status == "Bekliyor",
+    )).all()
+    for reminder in pending_reminders:
+        reminder.status = "İptal Edildi"
+        session.add(reminder)
     session.commit()
     return appointment
 
@@ -471,6 +655,17 @@ def change_requested_appointment(appointment_id: int, user_id: int, new_status: 
     session.refresh(appointment)
     session.add(AuditLog(user_id=user.id, action=f"RANDEVU_{new_status.upper()}", entity_type="Appointment", entity_id=appointment.id))
     session.commit()
+    if new_status == "Onaylandı":
+        create_demo_sms_reminders(session, appointment)
+    else:
+        pending_reminders = session.exec(select(SMSReminder).where(
+            SMSReminder.appointment_id == appointment.id,
+            SMSReminder.status == "Bekliyor",
+        )).all()
+        for reminder in pending_reminders:
+            reminder.status = "İptal Edildi"
+            session.add(reminder)
+        session.commit()
     return appointment
 
 
@@ -482,6 +677,81 @@ def approve_appointment(appointment_id: int, user_id: int, session: Session = De
 @app.patch("/appointments/{appointment_id}/reject", response_model=Appointment)
 def reject_appointment(appointment_id: int, user_id: int, session: Session = Depends(get_session)):
     return change_requested_appointment(appointment_id, user_id, "Reddedildi", session)
+
+
+@app.get("/sms-reminders/", response_model=list[SMSReminder])
+def get_sms_reminders(
+    department_id: int | None = None,
+    status: str | None = None,
+    session: Session = Depends(get_session),
+):
+    query = select(SMSReminder)
+    if department_id:
+        query = query.join(Appointment, SMSReminder.appointment_id == Appointment.id).where(
+            Appointment.department_id == department_id
+        )
+    if status:
+        query = query.where(SMSReminder.status == status)
+    return session.exec(query.order_by(SMSReminder.scheduled_for)).all()
+
+
+@app.post("/sms-reminders/{reminder_id}/simulate-send", response_model=SMSReminder)
+def simulate_sms_send(reminder_id: int, user_id: int, session: Session = Depends(get_session)):
+    reminder = session.get(SMSReminder, reminder_id)
+    user = session.get(User, user_id)
+    if not reminder or not user:
+        raise HTTPException(status_code=404, detail="SMS hatırlatması veya kullanıcı bulunamadı.")
+    appointment = session.get(Appointment, reminder.appointment_id)
+    is_department_secretary = appointment and user.role == "sekreter" and user.department_id == appointment.department_id
+    if not is_department_secretary and user.role != "yonetici":
+        raise HTTPException(status_code=403, detail="Bu SMS kaydı için işlem yetkiniz yok.")
+    if reminder.status == "İptal Edildi":
+        raise HTTPException(status_code=409, detail="İptal edilmiş SMS hatırlatması gönderilemez.")
+    reminder.status = "Gönderildi"
+    reminder.sent_at = datetime.now()
+    session.add(reminder)
+    session.commit()
+    session.refresh(reminder)
+    session.add(AuditLog(
+        user_id=user.id,
+        action="DEMO_SMS_GONDERILDI",
+        entity_type="SMSReminder",
+        entity_id=reminder.id,
+        details=f"{reminder.phone} - {reminder.reminder_type}",
+    ))
+    session.commit()
+    return reminder
+
+
+@app.post("/sms-reminders/actions/simulate-due", response_model=list[SMSReminder])
+def simulate_due_sms(user_id: int, session: Session = Depends(get_session)):
+    user = session.get(User, user_id)
+    if not user or user.role not in {"sekreter", "yonetici"}:
+        raise HTTPException(status_code=403, detail="SMS kuyruğunu çalıştırma yetkiniz yok.")
+    query = select(SMSReminder).where(
+        SMSReminder.status == "Bekliyor",
+        SMSReminder.scheduled_for <= datetime.now(),
+    )
+    if user.role == "sekreter":
+        query = query.join(Appointment, SMSReminder.appointment_id == Appointment.id).where(
+            Appointment.department_id == user.department_id
+        )
+    reminders = session.exec(query).all()
+    for reminder in reminders:
+        reminder.status = "Gönderildi"
+        reminder.sent_at = datetime.now()
+        session.add(reminder)
+        session.add(AuditLog(
+            user_id=user.id,
+            action="DEMO_SMS_GONDERILDI",
+            entity_type="SMSReminder",
+            entity_id=reminder.id,
+            details=f"{reminder.phone} - otomatik simülasyon",
+        ))
+    session.commit()
+    for reminder in reminders:
+        session.refresh(reminder)
+    return reminders
 
 
 @app.get("/audit-logs/", response_model=list[AuditLog])

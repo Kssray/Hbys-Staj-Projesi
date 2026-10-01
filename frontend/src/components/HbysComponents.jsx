@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import styles from '../styles.js'
 
 export function StatCard({ icon, title, value, text }) {
@@ -62,6 +63,41 @@ export function SearchBox({ value, onChange, placeholder }) {
   )
 }
 
+export function PatientCard({ patient, appointmentCount, nextAppointment, formatDate, onCreateAppointment }) {
+  const initials = `${patient.first_name?.charAt(0) || ''}${patient.last_name?.charAt(0) || ''}`.toLocaleUpperCase('tr-TR')
+  const maskedTc = patient.tc_no ? `${patient.tc_no.slice(0, 3)}******${patient.tc_no.slice(-2)}` : '-'
+
+  return (
+    <article className="patientCard" style={styles.patientCard}>
+      <div style={styles.patientCardHeader}>
+        <div style={styles.patientCardIdentity}>
+          <div style={styles.patientCardAvatar}>{initials}</div>
+          <div style={styles.patientCardNameGroup}>
+            <strong style={styles.patientCardName}>{patient.first_name} {patient.last_name}</strong>
+            <span style={styles.patientCardNumber}>Hasta No: #{String(patient.id).padStart(4, '0')}</span>
+          </div>
+        </div>
+        <span style={styles.patientActiveBadge}>Aktif</span>
+      </div>
+
+      <div className="patientCardInfoGrid" style={styles.patientCardInfoGrid}>
+        <div style={styles.patientInfoItem}><small>TC Kimlik No</small><strong>{maskedTc}</strong></div>
+        <div style={styles.patientInfoItem}><small>Telefon</small><strong>{patient.phone || 'Kayıtlı değil'}</strong></div>
+        <div style={styles.patientInfoItem}><small>Cinsiyet</small><strong>{patient.gender || 'Belirtilmemiş'}</strong></div>
+        <div style={styles.patientInfoItem}><small>Randevu</small><strong>{appointmentCount} kayıt</strong></div>
+      </div>
+
+      <div className="patientCardFooter" style={styles.patientCardFooter}>
+        <div style={styles.patientNextAppointment}>
+          <small>Yaklaşan randevu</small>
+          <strong>{nextAppointment ? formatDate(nextAppointment.appointment_date) : 'Planlanmış randevu yok'}</strong>
+        </div>
+        <button type="button" onClick={() => onCreateAppointment(patient)} style={styles.patientAppointmentButton}>+ Randevu</button>
+      </div>
+    </article>
+  )
+}
+
 export function AppointmentTable({
   appointments,
   getPatientName,
@@ -103,7 +139,7 @@ export function AppointmentTable({
                         : styles.waitingBadge
                   }
                 >
-                  {appointment.status === 'İptal Edildi' ? 'İptal' : appointment.status}
+                  {appointment.status === 'İptal Edildi' ? 'İptal' : appointment.status === 'Bekliyor' ? 'Muayene Bekliyor' : appointment.status}
                 </span>
               </td>
               <td style={styles.td}>
@@ -212,7 +248,52 @@ export function Toast({ type, message, onClose }) {
   )
 }
 
-export function LoginScreen({ form, onChange, onSubmit, error, saving }) {
+export function LoginScreen({ form, onChange, onSubmit, onDemoSelect, error, saving }) {
+  const [activeDemoGroup, setActiveDemoGroup] = useState('secretaries')
+  const demoAccounts = [
+    { group: 'admin', label: 'Yönetici', detail: 'Sistem Yöneticisi', username: 'admin', password: 'admin123' },
+    { group: 'secretaries', label: 'Dahiliye', detail: 'Ayşe Sekreter', username: 'sekreter', password: 'sekreter123' },
+    { group: 'secretaries', label: 'Dahiliye', detail: 'Elif Kaya', username: 'dahiliye_demo', password: 'demo1234' },
+    { group: 'secretaries', label: 'Göz Hastalıkları', detail: 'Melis Aydın', username: 'goz_demo', password: 'demo1234' },
+    { group: 'secretaries', label: 'Kardiyoloji', detail: 'Zeynep Çelik', username: 'kardiyo_demo', password: 'demo1234' },
+    { group: 'secretaries', label: 'Çocuk Sağlığı', detail: 'Buse Yıldız', username: 'cocuk_demo', password: 'demo1234' },
+    { group: 'secretaries', label: 'Ortopedi', detail: 'Emre Şahin', username: 'ortopedi_demo', password: 'demo1234' },
+    { group: 'secretaries', label: 'Dermatoloji', detail: 'Seda Arslan', username: 'derma_demo', password: 'demo1234' },
+    { group: 'doctors', label: 'Dahiliye', detail: 'Dr. Ahmet Yılmaz', username: 'doktor', password: 'doktor123' },
+    { group: 'doctors', label: 'Dahiliye', detail: 'Dr. Selin Akar', username: 'dahiliye_doktor2', password: 'demo1234' },
+    { group: 'doctors', label: 'Dahiliye', detail: 'Dr. Bora Kılıç', username: 'dahiliye_doktor3', password: 'demo1234' },
+    { group: 'doctors', label: 'Göz Hastalıkları', detail: 'Dr. Ayşe Demir', username: 'goz_doktor', password: 'demo1234' },
+    { group: 'doctors', label: 'Göz Hastalıkları', detail: 'Dr. Burak Öz', username: 'goz_doktor2', password: 'demo1234' },
+    { group: 'doctors', label: 'Göz Hastalıkları', detail: 'Dr. Leyla Uçar', username: 'goz_doktor3', password: 'demo1234' },
+    { group: 'doctors', label: 'Kardiyoloji', detail: 'Dr. Mehmet Kaya', username: 'kardiyoloji_doktor', password: 'demo1234' },
+    { group: 'doctors', label: 'Kardiyoloji', detail: 'Dr. İpek Çetin', username: 'kardiyoloji_doktor2', password: 'demo1234' },
+    { group: 'doctors', label: 'Kardiyoloji', detail: 'Dr. Kerem Ersoy', username: 'kardiyoloji_doktor3', password: 'demo1234' },
+    { group: 'doctors', label: 'Çocuk Sağlığı', detail: 'Dr. Elif Şahin', username: 'cocuk_doktor', password: 'demo1234' },
+    { group: 'doctors', label: 'Çocuk Sağlığı', detail: 'Dr. Deniz Aksoy', username: 'cocuk_doktor2', password: 'demo1234' },
+    { group: 'doctors', label: 'Çocuk Sağlığı', detail: 'Dr. Sibel Yıldız', username: 'cocuk_doktor3', password: 'demo1234' },
+    { group: 'doctors', label: 'Ortopedi', detail: 'Dr. Can Öztürk', username: 'ortopedi_doktor', password: 'demo1234' },
+    { group: 'doctors', label: 'Ortopedi', detail: 'Dr. Onur Eren', username: 'ortopedi_doktor2', password: 'demo1234' },
+    { group: 'doctors', label: 'Ortopedi', detail: 'Dr. Gizem Polat', username: 'ortopedi_doktor3', password: 'demo1234' },
+    { group: 'doctors', label: 'Dermatoloji', detail: 'Dr. Zeynep Arslan', username: 'dermatoloji_doktor', password: 'demo1234' },
+    { group: 'doctors', label: 'Dermatoloji', detail: 'Dr. Murat Keskin', username: 'dermatoloji_doktor2', password: 'demo1234' },
+    { group: 'doctors', label: 'Dermatoloji', detail: 'Dr. Pelin Doğan', username: 'dermatoloji_doktor3', password: 'demo1234' },
+    { group: 'patients', label: 'Hasta', detail: 'Kübra Yılmaz', username: 'hasta', password: 'hasta123' },
+    { group: 'patients', label: 'Hasta', detail: 'Uğur Yılmaz', username: 'ugur_hasta', password: 'demo1234' },
+    { group: 'patients', label: 'Hasta', detail: 'Nur Kaya', username: 'nur_hasta', password: 'demo1234' },
+    { group: 'patients', label: 'Hasta', detail: 'Mert Aydın', username: 'mert_hasta', password: 'demo1234' },
+    { group: 'patients', label: 'Hasta', detail: 'Seda Çelik', username: 'seda_hasta', password: 'demo1234' },
+    { group: 'patients', label: 'Hasta', detail: 'Emir Koç', username: 'emir_hasta', password: 'demo1234' },
+    { group: 'patients', label: 'Hasta', detail: 'Derya Şimşek', username: 'derya_hasta', password: 'demo1234' },
+    { group: 'patients', label: 'Hasta', detail: 'Ece Demir', username: 'ece_hasta', password: 'demo1234' },
+  ]
+  const demoGroups = [
+    { key: 'secretaries', label: 'Sekreterler' },
+    { key: 'doctors', label: 'Doktorlar' },
+    { key: 'patients', label: 'Hastalar' },
+    { key: 'admin', label: 'Yönetici' },
+  ]
+  const visibleDemoAccounts = demoAccounts.filter((account) => account.group === activeDemoGroup)
+
   return (
     <main className="loginPage" style={styles.loginPage}>
       <div style={styles.loginColumn}>
@@ -231,7 +312,7 @@ export function LoginScreen({ form, onChange, onSubmit, error, saving }) {
         {error && <div style={styles.loginError}>{error}</div>}
         <form onSubmit={onSubmit} style={styles.loginForm}>
           <label style={styles.label}>
-             Kullanıcı adı
+            Kullanıcı adı
             <input style={styles.input} name="username" value={form.username} onChange={onChange} placeholder="Kullanıcı adınız" autoComplete="username" required />
           </label>
           <label style={styles.label}>
@@ -243,12 +324,12 @@ export function LoginScreen({ form, onChange, onSubmit, error, saving }) {
             {saving ? 'Giriş yapılıyor...' : 'Giriş Yap'}
           </button>
         </form>
-        <div style={styles.demoAccounts}>
-          <strong>Demo hesapları</strong>
-          <span>admin / admin123</span>
-          <span>sekreter / sekreter123</span>
-          <span>doktor / doktor123</span>
-        </div>
+        <details style={styles.demoAccounts}>
+          <summary style={styles.demoAccountsSummary}>Hızlı demo hesapları</summary>
+          <p style={styles.demoAccountsHint}>Önce rol grubunu, ardından giriş yapmak istediğiniz hesabı seçin.</p>
+          <div style={styles.demoGroupTabs}>{demoGroups.map((group) => { const count = demoAccounts.filter((account) => account.group === group.key).length; return <button key={group.key} type="button" onClick={() => setActiveDemoGroup(group.key)} style={activeDemoGroup === group.key ? styles.demoGroupButtonActive : styles.demoGroupButton}>{group.label}<span>{count}</span></button> })}</div>
+          <div style={styles.demoAccountGrid}>{visibleDemoAccounts.map((account) => <button key={account.username} type="button" onClick={() => onDemoSelect(account)} style={styles.demoAccountButton}><span style={styles.demoAccountRole}>{account.label}</span><small style={styles.demoAccountDetail}>{account.detail} · {account.username}</small></button>)}</div>
+        </details>
         </section>
       </div>
     </main>
