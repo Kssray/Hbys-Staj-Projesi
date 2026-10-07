@@ -76,6 +76,18 @@ body {
   display: none;
 }
 
+/* Masaüstünde giriş kartı sol tarafta kalır; ortalama yalnızca mobilde uygulanır. */
+@media (min-width: 701px) {
+  .loginPage {
+    justify-content: flex-start !important;
+    padding-left: 7vw !important;
+  }
+
+  .loginColumn {
+    margin-left: clamp(0px, 4vw, 72px) !important;
+  }
+}
+
 *,
 *::before,
 *::after {
@@ -186,6 +198,14 @@ input[type='search']::-webkit-search-cancel-button {
     min-width: 0;
   }
 
+  .operationsGrid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .operationsStatsGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
   .patientWorkspace {
     grid-template-columns: 1fr !important;
   }
@@ -194,6 +214,15 @@ input[type='search']::-webkit-search-cancel-button {
 @media (max-width: 700px) {
   #root {
     width: 100%;
+  }
+
+  .operationsHero {
+    align-items: flex-start !important;
+    flex-direction: column;
+  }
+
+  .alertGrid {
+    grid-template-columns: 1fr !important;
   }
 
   .loginPage {

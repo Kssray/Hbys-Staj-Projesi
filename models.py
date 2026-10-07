@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional
 from sqlmodel import SQLModel, Field
+from sqlalchemy import Column, DateTime
 
 
 class User(SQLModel, table=True):
@@ -42,10 +43,10 @@ class Appointment(SQLModel, table=True):
     patient_id: int = Field(foreign_key="patient.id")  # Hangi hasta?
     doctor_id: int = Field(foreign_key="doctor.id")    # Hangi doktor?
     department_id: int = Field(foreign_key="department.id") # Hangi poliklinik?
-    appointment_date: datetime                         # Randevu tarihi ve saati
+    appointment_date: datetime = Field(sa_column=Column(DateTime))                         # Randevu tarihi ve saati
     status: str = Field(default="Talep Edildi")         # Talep Edildi, Onaylandı, Bekliyor, Muayenede, Tamamlandı, İptal Edildi, Gelmedi
     request_note: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime))
     requested_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id")
     confirmed_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id")
 
@@ -57,7 +58,7 @@ class MedicalRecord(SQLModel, table=True):
     appointment_id: int = Field(foreign_key="appointment.id", unique=True)
     diagnosis: str  # Teşhis (Örn: "Akut Faranjit")
     notes: Optional[str] = None  # Doktorun muayene notları
-    created_at:Optional[datetime] = Field(default_factory=datetime.utcnow)
+    created_at: Optional[datetime] = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime))
 
 # 2. REÇETE MODELİ
 class Prescription(SQLModel, table=True):
@@ -75,7 +76,7 @@ class AuditLog(SQLModel, table=True):
     entity_type: str
     entity_id: Optional[int] = None
     details: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime))
 
 
 class SMSReminder(SQLModel, table=True):
@@ -85,7 +86,48 @@ class SMSReminder(SQLModel, table=True):
     phone: str
     reminder_type: str
     message: str
-    scheduled_for: datetime
+    scheduled_for: datetime = Field(sa_column=Column(DateTime))
     status: str = Field(default="Bekliyor")
-    sent_at: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    sent_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime))
+
+
+# 8. YATAKLI SERVİS MODELİ
+class InpatientService(SQLModel, table=True):
+    """Hastanenin yatan hasta hizmeti veren servis birimi."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)
+    floor: Optional[str] = None
+    specialty: Optional[str] = None
+    total_beds: int = 0
+    active: bool = True
+
+
+# 9. ODA MODELİ
+class Room(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    service_id: int = Field(foreign_key="inpatientservice.id", index=True)
+    room_number: str
+    room_type: str = "Standart"
+    capacity: int = 1
+    active: bool = True
+
+
+# 10. YATAK MODELİ
+class Bed(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    room_id: int = Field(foreign_key="room.id", index=True)
+    bed_number: str
+    status: str = "Boş"  # Boş, Dolu, Temizlikte, Bakıma Ayrıldı
+    active: bool = True
+
+
+# 11. HASTA YATIŞ / YATAK ATAMA MODELİ
+class BedAssignment(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    bed_id: int = Field(foreign_key="bed.id", index=True)
+    patient_id: int = Field(foreign_key="patient.id", index=True)
+    admission_reason: Optional[str] = None
+    admitted_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime))
+    discharged_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    status: str = "Yatıyor"  # Yatıyor, Taburcu Edildi

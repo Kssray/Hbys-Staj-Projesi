@@ -13,9 +13,17 @@ import {
   Textarea,
   Toast,
 } from './components/HbysComponents.jsx'
+import BedManagement from './components/BedManagement.jsx'
 import styles from './styles.js'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
+
+const ROLE_PERMISSIONS = {
+  hasta: ['appointment.create', 'appointment.cancel', 'patient.view'],
+  doktor: ['appointment.create', 'appointment.cancel', 'appointment.status.update', 'medical_record.create', 'prescription.create', 'bed.view'],
+  sekreter: ['patient.create', 'patient.view', 'appointment.create', 'appointment.cancel', 'appointment.approve', 'appointment.reject', 'appointment.reschedule', 'appointment.status.update', 'bed.view', 'bed.assign', 'bed.discharge'],
+  yonetici: ['*'],
+}
 
 const emptyPatient = {
   tc_no: '',
@@ -58,6 +66,12 @@ function getLocalDateKey(value) {
   return `${year}-${month}-${day}`
 }
 
+function formatDateKeyForDisplay(value) {
+  if (!value) return '-'
+  const [year, month, day] = String(value).slice(0, 10).split('-')
+  return year && month && day ? `${day}.${month}.${year}` : value
+}
+
 function getLocalTimeKey(value) {
   const date = value instanceof Date ? value : new Date(value)
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
@@ -77,6 +91,11 @@ function isValidAppointmentTime(time) {
   if (!time || time < APPOINTMENT_START_TIME || time > APPOINTMENT_END_TIME) return false
   const minute = Number(time.split(':')[1])
   return minute === 0 || minute === 30
+}
+
+function isAppointmentTimeReached(value) {
+  const appointmentDate = new Date(value)
+  return !Number.isNaN(appointmentDate.getTime()) && appointmentDate.getTime() <= Date.now()
 }
 
 async function getErrorMessage(response, fallback) {
@@ -113,6 +132,8 @@ function App() {
   const [prescriptions, setPrescriptions] = useState([])
   const [auditLogs, setAuditLogs] = useState([])
   const [smsReminders, setSmsReminders] = useState([])
+  const [inpatientServices, setInpatientServices] = useState([])
+  const [beds, setBeds] = useState([])
   const [processingRequest, setProcessingRequest] = useState(null)
 
   const [patientForm, setPatientForm] = useState(emptyPatient)
@@ -137,10 +158,17 @@ function App() {
   const [weekOffset, setWeekOffset] = useState(0)
   const [activeSecretaryTab, setActiveSecretaryTab] = useState('appointments')
   const [activeDoctorTab, setActiveDoctorTab] = useState('today')
+  const [activePatientTab, setActivePatientTab] = useState('appointments')
+  const [activeAdminTab, setActiveAdminTab] = useState('operations')
   const [selectedPatientCard, setSelectedPatientCard] = useState(null)
   const [rescheduleAppointment, setRescheduleAppointment] = useState(null)
   const [rescheduleForm, setRescheduleForm] = useState({ date: '', time: '' })
   const [calendarRevision, setCalendarRevision] = useState(0)
+
+  const can = (permission) => {
+    const permissions = ROLE_PERMISSIONS[user?.role] || []
+    return permissions.includes('*') || permissions.includes(permission)
+  }
 
   const handleLogin = async (event) => {
     event.preventDefault()
@@ -217,8 +245,8 @@ function App() {
             ? `${API_URL}/appointments/?patient_id=${user.patient_id}`
             : `${API_URL}/appointments/`
       const patientsUrl = user?.role === 'hasta' && user.patient_id
-        ? `${API_URL}/patients/?patient_id=${user.patient_id}`
-        : `${API_URL}/patients/`
+        ? `${API_URL}/patients/?patient_id=${user.patient_id}&user_id=${user.id}`
+        : `${API_URL}/patients/?user_id=${user.id}`
       const medicalRecordsUrl = user?.role === 'hasta' && user.patient_id
         ? `${API_URL}/medical-records/?patient_id=${user.patient_id}`
         : user?.role === 'doktor' && user.doctor_id
@@ -230,8 +258,8 @@ function App() {
           ? `${API_URL}/prescriptions/?doctor_id=${user.doctor_id}`
           : `${API_URL}/prescriptions/`
       const smsRemindersUrl = user?.role === 'sekreter' && user.department_id
-        ? `${API_URL}/sms-reminders/?department_id=${user.department_id}`
-        : `${API_URL}/sms-reminders/`
+        ? `${API_URL}/sms-reminders/?user_id=${user.id}&department_id=${user.department_id}`
+        : `${API_URL}/sms-reminders/?user_id=${user?.id || ''}`
       const responses = await Promise.all([
         fetch(`${API_URL}/departments/`),
         fetch(`${API_URL}/doctors/`),
@@ -256,6 +284,18 @@ function App() {
       setPrescriptions(data[5])
       setAuditLogs(data[6])
       setSmsReminders(responses[7].ok ? await responses[7].json() : [])
+      if (['sekreter', 'doktor', 'yonetici'].includes(user?.role)) {
+        const bedQuery = `?user_id=${user.id}`
+        const [serviceResponse, bedResponse] = await Promise.all([
+          fetch(`${API_URL}/inpatient-services/${bedQuery}`),
+          fetch(`${API_URL}/beds/${bedQuery}`),
+        ])
+        if (serviceResponse.ok) setInpatientServices(await serviceResponse.json())
+        if (bedResponse.ok) setBeds(await bedResponse.json())
+      } else {
+        setInpatientServices([])
+        setBeds([])
+      }
     } catch (err) {
       console.error(err)
       setError('Veriler yüklenemedi. Backend sunucusunun çalıştığını kontrol edin.')
@@ -265,11 +305,11 @@ function App() {
   }
 
   const refreshSmsReminders = async () => {
-    if (!user || !['sekreter', 'yonetici'].includes(user.role)) return
+    if (!user || !['sekreter', 'yonetici', 'hasta'].includes(user.role)) return
     try {
       const url = user.role === 'sekreter' && user.department_id
-        ? `${API_URL}/sms-reminders/?department_id=${user.department_id}`
-        : `${API_URL}/sms-reminders/`
+        ? `${API_URL}/sms-reminders/?user_id=${user.id}&department_id=${user.department_id}`
+        : `${API_URL}/sms-reminders/?user_id=${user.id}`
       const response = await fetch(url, { cache: 'no-store' })
       if (response.ok) setSmsReminders(await response.json())
     } catch (err) {
@@ -292,6 +332,72 @@ function App() {
     return freshAppointments
   }
 
+  const refreshBedData = async () => {
+    if (!user || !['sekreter', 'doktor', 'yonetici'].includes(user.role)) return
+    const query = `?user_id=${user.id}`
+    const [serviceResponse, bedResponse] = await Promise.all([
+      fetch(`${API_URL}/inpatient-services/${query}`, { cache: 'no-store' }),
+      fetch(`${API_URL}/beds/${query}`, { cache: 'no-store' }),
+    ])
+    if (!serviceResponse.ok || !bedResponse.ok) throw new Error('Servis ve yatak verileri alınamadı.')
+    setInpatientServices(await serviceResponse.json())
+    setBeds(await bedResponse.json())
+  }
+
+  const handleAssignBed = async (payload) => {
+    if (saving) return false
+    try {
+      setSaving(true)
+      setError('')
+      const response = await fetch(`${API_URL}/bed-assignments/?user_id=${user.id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!response.ok) throw new Error(await getErrorMessage(response, 'Hasta yatağa yatırılamadı.'))
+      await refreshBedData()
+      setSuccessMessage('Hasta seçilen yatağa başarıyla yatırıldı.')
+      return true
+    } catch (err) {
+      setError(err.message)
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDischargePatient = async (assignmentId) => {
+    if (saving || !window.confirm('Bu hastayı taburcu etmek istediğinize emin misiniz?')) return
+    try {
+      setSaving(true)
+      setError('')
+      const response = await fetch(`${API_URL}/bed-assignments/${assignmentId}/discharge?user_id=${user.id}`, { method: 'PATCH' })
+      if (!response.ok) throw new Error(await getErrorMessage(response, 'Hasta taburcu edilemedi.'))
+      await refreshBedData()
+      setSuccessMessage('Hasta taburcu edildi. Yatak otomatik olarak tekrar boş duruma alındı.')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleCompleteBedCleaning = async (bedId) => {
+    if (saving) return
+    try {
+      setSaving(true)
+      setError('')
+      const response = await fetch(`${API_URL}/beds/${bedId}/status?status=${encodeURIComponent('Boş')}&user_id=${user.id}`, { method: 'PATCH' })
+      if (!response.ok) throw new Error(await getErrorMessage(response, 'Yatak boş duruma alınamadı.'))
+      await refreshBedData()
+      setSuccessMessage('Yatak temizliği tamamlandı ve tekrar kullanıma açıldı.')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   useEffect(() => {
     if (user) loadData()
   }, [user])
@@ -303,6 +409,14 @@ function App() {
     }, 15000)
     return () => window.clearInterval(timer)
   }, [user?.id, role, activeSecretaryTab])
+
+  useEffect(() => {
+    if (!user || !['secretary', 'admin', 'patient'].includes(role)) return undefined
+    const timer = window.setInterval(() => {
+      refreshSmsReminders().catch((err) => console.warn('SMS durumu otomatik yenilenemedi:', err))
+    }, 15000)
+    return () => window.clearInterval(timer)
+  }, [user?.id, role, user?.department_id])
 
   useEffect(() => {
     const timer = window.setInterval(() => setCurrentDateTime(new Date()), 1000)
@@ -408,6 +522,71 @@ function App() {
     return doctors
   }, [doctors, appointmentForm.department_id])
 
+  const availableAppointmentSlots = useMemo(() => {
+    if (!appointmentForm.doctor_id || !appointmentForm.date) return []
+    const slots = []
+    for (let minutes = 8 * 60; minutes <= 17 * 60 + 30; minutes += 30) {
+      const hour = String(Math.floor(minutes / 60)).padStart(2, '0')
+      const minute = String(minutes % 60).padStart(2, '0')
+      const time = `${hour}:${minute}`
+      const dateTimeKey = `${appointmentForm.date}T${time}`
+      const doctorBusy = appointments.some((item) =>
+        String(item.doctor_id) === String(appointmentForm.doctor_id) &&
+        !['İptal', 'İptal Edildi', 'Reddedildi'].includes(item.status) &&
+        String(item.appointment_date).slice(0, 16) === dateTimeKey,
+      )
+      const patientBusy = appointmentForm.patient_id && appointments.some((item) =>
+        String(item.patient_id) === String(appointmentForm.patient_id) &&
+        !['İptal', 'İptal Edildi', 'Reddedildi'].includes(item.status) &&
+        String(item.appointment_date).slice(0, 16) === dateTimeKey,
+      )
+      if (!doctorBusy && !patientBusy && new Date(dateTimeKey) >= new Date()) {
+        slots.push({ value: time, label: time })
+      }
+    }
+    return slots
+  }, [appointments, appointmentForm.doctor_id, appointmentForm.date, appointmentForm.patient_id])
+
+  const doctorAppointmentSuggestions = useMemo(() => {
+    if (!appointmentForm.department_id) return {}
+    const departmentDoctors = doctors.filter((doctor) => doctor.department_id === Number(appointmentForm.department_id))
+    const blockedStatuses = ['İptal', 'İptal Edildi', 'Reddedildi']
+    const suggestions = {}
+    departmentDoctors.forEach((doctor) => {
+      for (let dayOffset = 0; dayOffset < 90 && !suggestions[doctor.id]; dayOffset += 1) {
+        const candidateDate = new Date()
+        candidateDate.setHours(0, 0, 0, 0)
+        candidateDate.setDate(candidateDate.getDate() + dayOffset)
+        if (candidateDate.getDay() === 0 || candidateDate.getDay() === 6) continue
+        const dateKey = getLocalDateKey(candidateDate)
+        for (let minutes = 8 * 60; minutes <= 17 * 60 + 30; minutes += 30) {
+          const time = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+          const key = `${dateKey}T${time}`
+          const doctorBusy = appointments.some((item) => String(item.doctor_id) === String(doctor.id) && !blockedStatuses.includes(item.status) && String(item.appointment_date).slice(0, 16) === key)
+          const patientBusy = appointmentForm.patient_id && appointments.some((item) => String(item.patient_id) === String(appointmentForm.patient_id) && !blockedStatuses.includes(item.status) && String(item.appointment_date).slice(0, 16) === key)
+          if (!doctorBusy && !patientBusy && new Date(key) >= new Date()) {
+            suggestions[doctor.id] = { doctor, date: dateKey, time }
+            break
+          }
+        }
+      }
+    })
+    return suggestions
+  }, [appointments, doctors, appointmentForm.department_id, appointmentForm.patient_id])
+
+  const nearestAppointmentSuggestion = appointmentForm.doctor_id
+    ? doctorAppointmentSuggestions[appointmentForm.doctor_id] || null
+    : null
+
+  useEffect(() => {
+    const selectedSlotIsValid = availableAppointmentSlots.some((slot) => slot.value === appointmentForm.time)
+    if (appointmentForm.time && !selectedSlotIsValid) {
+      setAppointmentForm((previous) => ({ ...previous, time: availableAppointmentSlots[0]?.value || '' }))
+    } else if (!appointmentForm.time && availableAppointmentSlots[0]) {
+      setAppointmentForm((previous) => ({ ...previous, time: availableAppointmentSlots[0].value }))
+    }
+  }, [availableAppointmentSlots, appointmentForm.time])
+
   const visibleDepartments = useMemo(() => {
     if (user?.role === 'sekreter' && user.department_id) {
       return departments.filter((department) => department.id === user.department_id)
@@ -430,6 +609,37 @@ function App() {
     sent: smsReminders.filter((item) => item.status === 'Gönderildi').length,
     cancelled: smsReminders.filter((item) => item.status === 'İptal Edildi').length,
   }), [smsReminders])
+
+  const operationsOverview = useMemo(() => {
+    const activeStatuses = ['İptal', 'İptal Edildi', 'Reddedildi']
+    const activeAppointments = appointments.filter((item) => !activeStatuses.includes(item.status))
+    const today = getLocalToday()
+    const todayAppointments = activeAppointments.filter((item) => getLocalDateKey(item.appointment_date) === today)
+    const departmentLoad = departments.map((department) => ({
+      ...department,
+      count: activeAppointments.filter((item) => item.department_id === department.id).length,
+      todayCount: todayAppointments.filter((item) => item.department_id === department.id).length,
+    })).sort((a, b) => b.todayCount - a.todayCount || b.count - a.count)
+    const doctorLoad = doctors.map((doctor) => ({
+      ...doctor,
+      count: todayAppointments.filter((item) => item.doctor_id === doctor.id).length,
+    })).sort((a, b) => b.count - a.count)
+    const occupiedBeds = beds.filter((bed) => bed.status === 'Dolu').length
+    const cleaningBeds = beds.filter((bed) => bed.status === 'Temizlikte').length
+    const availableBeds = beds.filter((bed) => bed.status === 'Boş').length
+    return {
+      activeAppointments,
+      todayAppointments,
+      departmentLoad,
+      doctorLoad,
+      occupiedBeds,
+      cleaningBeds,
+      availableBeds,
+      noShowRisk: appointments.filter((item) => item.status === 'Gelmedi').length,
+      waiting: appointments.filter((item) => ['Bekliyor', 'Onaylandı'].includes(item.status)).length,
+      inExamination: appointments.filter((item) => item.status === 'Muayenede').length,
+    }
+  }, [appointments, departments, doctors, beds])
 
   const updateForm = (setter) => (event) => {
     const { name, value } = event.target
@@ -506,11 +716,15 @@ function App() {
       return
     }
 
-    const selectedDateTime = new Date(
-      `${appointmentForm.date}T${appointmentForm.time}`,
-    )
+    const selectedDateKey = `${appointmentForm.date}T${appointmentForm.time}`
+    const selectedDateTime = new Date(selectedDateKey)
 
-    if (!appointmentForm.date || !appointmentForm.time || selectedDateTime < new Date()) {
+    if (!appointmentForm.date || !appointmentForm.time || Number.isNaN(selectedDateTime.getTime())) {
+      setError('Geçerli bir randevu tarihi ve saati seçmelisiniz.')
+      return
+    }
+
+    if (selectedDateTime < new Date()) {
       setError('Geçmiş bir tarih veya saate randevu alınamaz.')
       return
     }
@@ -520,9 +734,20 @@ function App() {
       return
     }
 
-    const selectedDateKey = `${appointmentForm.date}T${appointmentForm.time}`
+    const selectedDoctor = doctors.find((doctor) => doctor.id === Number(appointmentForm.doctor_id))
+    if (!selectedDoctor || selectedDoctor.department_id !== Number(appointmentForm.department_id)) {
+      setError('Seçilen doktor bu poliklinikte görev yapmıyor.')
+      return
+    }
+
+    const selectedSlotIsAvailable = availableAppointmentSlots.some((slot) => slot.value === appointmentForm.time)
+    if (!selectedSlotIsAvailable) {
+      setError('Seçilen tarih ve saat uygun değil. Lütfen listeden uygun bir saat seçin.')
+      return
+    }
+
     const activeAppointments = appointments.filter(
-      (item) => item.status !== 'İptal' && item.status !== 'İptal Edildi',
+      (item) => !['İptal', 'İptal Edildi', 'Reddedildi'].includes(item.status),
     )
 
     const doctorConflict = activeAppointments.some(
@@ -549,7 +774,7 @@ function App() {
 
     try {
       setSaving(true)
-      const response = await fetch(`${API_URL}/appointments/`, {
+      const response = await fetch(`${API_URL}/appointments/?user_id=${user.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -624,7 +849,7 @@ function App() {
       }
       await refreshSmsReminders()
       setSuccessMessage(decision === 'approve'
-        ? `${getPatientName(previousAppointment.patient_id)} randevusu onaylandı ve SMS hatırlatmaları hazırlandı.`
+        ? `${getPatientName(previousAppointment.patient_id)} randevusu onaylandı. SMS hatırlatmaları zamanı geldiğinde otomatik gönderilecek.`
         : `${getPatientName(previousAppointment.patient_id)} randevu talebi reddedildi.`)
     } catch (err) {
       setError(err.message)
@@ -760,12 +985,36 @@ function App() {
     if (saving) return
     try {
       setSaving(true)
-      const response = await fetch(`${API_URL}/appointments/${appointment.id}/status?status=Muayenede&user_id=${user.id}`, { method: 'PATCH' })
-      if (!response.ok) throw new Error(await getErrorMessage(response, 'Muayene başlatılamadı.'))
-      const updated = await response.json()
+      setError('')
+      const transition = async (status) => {
+        const response = await fetch(`${API_URL}/appointments/${appointment.id}/status?status=${encodeURIComponent(status)}&user_id=${user.id}`, { method: 'PATCH' })
+        if (!response.ok) throw new Error(await getErrorMessage(response, 'Muayene başlatılamadı.'))
+        return response.json()
+      }
+      // Kullanıcı tek butona basar; backend'deki gerçekçi ara durum
+      // Onaylandı -> Bekliyor -> Muayenede sırasıyla otomatik ilerletilir.
+      if (appointment.status === 'Onaylandı') await transition('Bekliyor')
+      const updated = await transition('Muayenede')
       setAppointments((previous) => previous.map((item) => item.id === updated.id ? updated : item))
       setSelectedAppointment(updated)
       setIsExaminationModalOpen(true)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleMoveToWaiting = async (appointment) => {
+    if (saving) return
+    try {
+      setSaving(true)
+      setError('')
+      const response = await fetch(`${API_URL}/appointments/${appointment.id}/status?status=Bekliyor&user_id=${user.id}`, { method: 'PATCH' })
+      if (!response.ok) throw new Error(await getErrorMessage(response, 'Randevu bekleme kuyruğuna alınamadı.'))
+      const updated = await response.json()
+      setAppointments((previous) => previous.map((item) => item.id === updated.id ? updated : item))
+      setSuccessMessage('Hasta bekleme kuyruğuna alındı. Artık muayeneyi başlatabilirsiniz.')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -826,7 +1075,7 @@ function App() {
       }
 
       const statusResponse = await fetch(
-        `${API_URL}/appointments/${selectedAppointment.id}/status?status=Tamamlandı`,
+        `${API_URL}/appointments/${selectedAppointment.id}/status?status=Tamamlandı&user_id=${user.id}`,
         { method: 'PATCH' },
       )
       if (statusResponse.ok) {
@@ -866,6 +1115,8 @@ function App() {
     ? new Date(value).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })
     : '-'
 
+  const formatSmsStatus = (status) => status === 'Bekliyor' ? 'Planlandı' : status
+
   const renderDoctorAppointments = (items, emptyMessage) => items.length === 0 ? (
     <div style={styles.doctorEmptyState}><span style={styles.doctorEmptyIcon}>✓</span><strong>{emptyMessage}</strong><small>Yeni kayıtlar oluştuğunda bu alanda görüntülenecektir.</small></div>
   ) : (
@@ -874,7 +1125,7 @@ function App() {
         const hasRecord = medicalRecords.some((record) => record.appointment_id === appointment.id)
         return <div key={appointment.id} style={styles.doctorAppointmentCard}>
           <div style={styles.doctorAppointmentMain}><div style={styles.patientAvatar}>{getPatientName(appointment.patient_id).split(' ').map((part) => part.charAt(0)).slice(0, 2).join('')}</div><div><strong style={styles.appointmentPatient}>{getPatientName(appointment.patient_id)}</strong><p style={styles.appointmentDetails}>{getDepartmentName(appointment.department_id)} · {formatDate(appointment.appointment_date)}</p><span style={styles.doctorStatusText}>Durum: {hasRecord || appointment.status === 'Tamamlandı' ? 'Tamamlandı' : appointment.status}</span></div></div>
-          {hasRecord || appointment.status === 'Tamamlandı' ? <span style={styles.completedBadge}>Tamamlandı</span> : appointment.status === 'İptal' || appointment.status === 'İptal Edildi' ? <span style={styles.cancelledBadge}>İptal Edildi</span> : appointment.status === 'Onaylandı' || appointment.status === 'Bekliyor' ? <button type="button" onClick={() => handleStartExamination(appointment)} style={styles.primaryButton}>Muayeneye Al</button> : <span style={styles.waitingBadge}>Sekreter onayı bekleniyor</span>}
+          {hasRecord || appointment.status === 'Tamamlandı' ? <span style={styles.completedBadge}>Tamamlandı</span> : appointment.status === 'İptal' || appointment.status === 'İptal Edildi' ? <span style={styles.cancelledBadge}>İptal Edildi</span> : appointment.status === 'Onaylandı' || appointment.status === 'Bekliyor' ? isAppointmentTimeReached(appointment.appointment_date) ? <button type="button" disabled={saving} onClick={() => handleStartExamination(appointment)} style={saving ? styles.disabledButton : styles.primaryButton}>{saving ? 'Hazırlanıyor...' : 'Muayeneye Al'}</button> : <span style={styles.scheduledBadge}>Randevu zamanı bekleniyor</span> : <span style={styles.waitingBadge}>Sekreter onayı bekleniyor</span>}
         </div>
       })}
     </div>
@@ -916,14 +1167,14 @@ function App() {
 
       {role === 'secretary' && (
         <nav style={styles.tabContainer} aria-label="Sekreter paneli sekmeleri">
-          {[['appointments', requestedAppointments.length ? `Randevular (${requestedAppointments.length})` : 'Randevular'], ['patients', 'Hastalar'], ['calendar', 'Takvim'], ['sms', smsStats.pending ? `SMS (${smsStats.pending})` : 'SMS'], ['summary', 'Poliklinik Özeti']].map(([tabKey, label]) => (
+          {[['appointments', requestedAppointments.length ? `Randevular (${requestedAppointments.length})` : 'Randevular'], ['patients', 'Hastalar'], ['beds', 'Servis & Yatak'], ['calendar', 'Takvim'], ['sms', smsStats.pending ? `SMS (${smsStats.pending})` : 'SMS'], ['summary', 'Poliklinik Özeti']].map(([tabKey, label]) => (
             <button key={tabKey} type="button" onClick={() => { setActiveSecretaryTab(tabKey); window.scrollTo({ top: 0, behavior: 'smooth' }) }} style={activeSecretaryTab === tabKey ? styles.activeTabButton : styles.tabButton}>{label}</button>
           ))}
         </nav>
       )}
       {role === 'doctor' && (
         <nav style={styles.tabContainer} aria-label="Doktor paneli sekmeleri">
-          {[['today', 'Bugünkü Randevular'], ['waiting', 'Muayene Bekleyenler'], ['completed', 'Tamamlananlar'], ['history', 'Hasta Geçmişi']].map(([tabKey, label]) => (
+          {[['today', 'Bugünkü Randevular'], ['waiting', 'Muayene Bekleyenler'], ['completed', 'Tamamlananlar'], ['history', 'Hasta Geçmişi'], ['inpatients', 'Servis Hastaları']].map(([tabKey, label]) => (
             <button key={tabKey} type="button" onClick={() => { setActiveDoctorTab(tabKey); setAppointmentSearch(''); window.scrollTo({ top: 0, behavior: 'smooth' }) }} style={activeDoctorTab === tabKey ? styles.activeTabButton : styles.tabButton}>{label}</button>
           ))}
         </nav>
@@ -943,6 +1194,31 @@ function App() {
       </section>}
 
       {role === 'admin' ? (
+        <>
+        <nav style={styles.tabContainer} aria-label="Yönetim paneli sekmeleri">
+          {[['operations', 'Operasyon Merkezi'], ['audit', 'Audit Logları']].map(([tabKey, label]) => (
+            <button key={tabKey} type="button" onClick={() => { setActiveAdminTab(tabKey); window.scrollTo({ top: 0, behavior: 'smooth' }) }} style={activeAdminTab === tabKey ? styles.activeTabButton : styles.tabButton}>{label}</button>
+          ))}
+        </nav>
+        {activeAdminTab === 'operations' ? (
+        <section style={styles.operationsPanel} data-reveal="up">
+          <div style={styles.operationsHero}>
+            <div><p style={styles.tabEyebrow}>HASTANE KARAR DESTEK MERKEZİ</p><h2 style={styles.tabPageTitle}>Akıllı Operasyon Merkezi</h2><p style={styles.formDescription}>Hastanenin randevu yoğunluğunu, klinik akışını ve yatak kapasitesini tek ekrandan izleyin.</p></div>
+            <span style={styles.liveBadge}>● Canlı veriler</span>
+          </div>
+          <div style={styles.operationsStatsGrid}>
+            <div style={styles.operationsStatCard}><span style={styles.operationsStatIcon}>◷</span><div style={styles.operationsStatContent}><strong style={styles.operationsStatValue}>{operationsOverview.todayAppointments.length}</strong><small style={styles.operationsStatLabel}>Bugünkü randevu</small></div></div>
+            <div style={styles.operationsStatCard}><span style={styles.operationsStatIcon}>⌛</span><div style={styles.operationsStatContent}><strong style={styles.operationsStatValue}>{operationsOverview.waiting}</strong><small style={styles.operationsStatLabel}>Bekleyen akış</small></div></div>
+            <div style={styles.operationsStatCard}><span style={styles.operationsStatIcon}>◉</span><div style={styles.operationsStatContent}><strong style={styles.operationsStatValue}>{operationsOverview.inExamination}</strong><small style={styles.operationsStatLabel}>Muayenede</small></div></div>
+            <div style={styles.operationsStatCard}><span style={styles.operationsStatIcon}>▣</span><div style={styles.operationsStatContent}><strong style={styles.operationsStatValue}>{operationsOverview.availableBeds}</strong><small style={styles.operationsStatLabel}>Boş yatak</small></div></div>
+          </div>
+          <div style={styles.operationsGrid}>
+            <section style={styles.operationsCard}><div style={styles.operationsCardHeader}><div><h3 style={styles.cardSectionTitle}>Poliklinik yoğunluğu</h3><p style={styles.cardSectionText}>Bugünkü randevulara göre dağılım.</p></div><span style={styles.resultCount}>{operationsOverview.todayAppointments.length} randevu</span></div>{operationsOverview.departmentLoad.map((department) => <div key={department.id} style={styles.loadRow}><div style={styles.loadRowTop}><strong>{department.name}</strong><span>{department.todayCount} bugün · {department.count} toplam</span></div><div style={styles.loadTrack}><span style={{ ...styles.loadBar, width: `${Math.min(100, operationsOverview.todayAppointments.length ? (department.todayCount / Math.max(...operationsOverview.departmentLoad.map((item) => item.todayCount), 1)) * 100 : 0)}%` }} /></div></div>)}</section>
+            <section style={styles.operationsCard}><div style={styles.operationsCardHeader}><div><h3 style={styles.cardSectionTitle}>Yatak kapasitesi</h3><p style={styles.cardSectionText}>Servislerin güncel durumu.</p></div></div><div style={styles.bedOverviewGrid}><div style={styles.bedOverviewCell}><strong style={styles.bedOverviewValue}>{operationsOverview.occupiedBeds}</strong><small style={styles.bedOverviewLabel}>Dolu</small></div><div style={styles.bedOverviewCell}><strong style={styles.bedOverviewValue}>{operationsOverview.availableBeds}</strong><small style={styles.bedOverviewLabel}>Boş</small></div><div style={styles.bedOverviewCell}><strong style={styles.bedOverviewValue}>{operationsOverview.cleaningBeds}</strong><small style={styles.bedOverviewLabel}>Temizlikte</small></div></div><div style={styles.operationsNotice}>Toplam takip edilen yatak: <strong>{beds.length}</strong></div></section>
+          </div>
+          <section style={styles.operationsCard}><div style={styles.operationsCardHeader}><div><h3 style={styles.cardSectionTitle}>Dikkat gerektiren durumlar</h3><p style={styles.cardSectionText}>Yönetim için öne çıkan operasyon sinyalleri.</p></div></div><div style={styles.alertGrid}><div style={operationsOverview.waiting ? styles.alertItemWarning : styles.alertItemGood}><strong>{operationsOverview.waiting}</strong><span>Onay veya muayene bekleyen randevu</span></div><div style={operationsOverview.noShowRisk ? styles.alertItemWarning : styles.alertItemGood}><strong>{operationsOverview.noShowRisk}</strong><span>Gelmedi olarak işaretlenen randevu</span></div><div style={operationsOverview.cleaningBeds ? styles.alertItemWarning : styles.alertItemGood}><strong>{operationsOverview.cleaningBeds}</strong><span>Temizlik bekleyen yatak</span></div></div></section>
+        </section>
+        ) : (
         <section style={styles.panelWide} data-reveal="up">
           <div style={styles.actionPanelInner}>
             <div>
@@ -960,6 +1236,8 @@ function App() {
             </div>
           )}
         </section>
+        )}
+        </>
       ) : role === 'patient' ? (
         <section style={styles.panelWide} data-reveal="up">
           <div style={styles.actionPanelInner}>
@@ -971,21 +1249,37 @@ function App() {
             <button type="button" onClick={() => { setAppointmentForm({ ...emptyAppointment, patient_id: user.patient_id || '' }); setIsAppointmentModalOpen(true) }} style={styles.primaryButton}>+ Randevu Talep Et</button>
           </div>
           {patients[0] && <div style={styles.patientRow}><strong>{patients[0].first_name} {patients[0].last_name}</strong><small>TC: {patients[0].tc_no.slice(0, 3)}******{patients[0].tc_no.slice(-2)}</small></div>}
-          <h3 style={styles.sectionTitle}>Randevularım</h3>
-          {filteredAppointments.length === 0 ? <p style={styles.emptyText}>Henüz randevunuz bulunmuyor.</p> : <AppointmentTable appointments={filteredAppointments} getPatientName={getPatientName} getDoctorName={getDoctorName} getDepartmentName={getDepartmentName} formatDate={formatDate} onCancel={handleCancelAppointment} />}
-          <h3 style={styles.sectionTitle}>Muayene ve Reçete Geçmişim</h3>
-          {medicalRecords.length === 0 ? <p style={styles.emptyText}>Henüz tamamlanmış bir muayene kaydınız bulunmuyor.</p> : (
-            <div style={styles.doctorAppointmentList}>
-              {medicalRecords.map((record) => {
-                const appointment = appointments.find((item) => item.id === record.appointment_id)
-                const recordPrescriptions = prescriptions.filter((item) => item.medical_record_id === record.id)
-                return <div key={record.id} style={styles.doctorAppointmentCard}>
-                  <div><strong style={styles.appointmentPatient}>{record.diagnosis}</strong><p style={styles.appointmentDetails}>{appointment ? `${getDoctorName(appointment.doctor_id)} · ${formatDate(record.created_at)}` : formatDate(record.created_at)}</p><span>{record.notes || 'Muayene notu bulunmuyor.'}</span></div>
-                  <div>{recordPrescriptions.length === 0 ? <span style={styles.waitingBadge}>Reçete yok</span> : recordPrescriptions.map((item) => <div key={item.id} style={{ marginBottom: 5 }}><strong>{item.medicine_name}</strong><br /><small>{item.dosage} · {item.days} gün</small></div>)}</div>
+          <nav style={styles.patientTabContainer} aria-label="Hasta paneli sekmeleri">
+            {[['appointments', 'Randevularım'], ['history', 'Sağlık Geçmişim'], ['notifications', `Bildirimlerim${smsReminders.length ? ` (${smsReminders.length})` : ''}`]].map(([tabKey, label]) => (
+              <button key={tabKey} type="button" onClick={() => setActivePatientTab(tabKey)} style={activePatientTab === tabKey ? styles.activePatientTabButton : styles.patientTabButton}>{label}</button>
+            ))}
+          </nav>
+          {activePatientTab === 'appointments' && <div style={styles.patientTabContent}>
+            <div style={styles.patientHistoryHeader}><div><p style={styles.tabEyebrow}>RANDEVU TAKİBİ</p><h3 style={styles.sectionTitle}>Randevularım</h3><p style={styles.formDescription}>Yaklaşan ve geçmiş randevularınızı tek listeden takip edin.</p></div><span style={styles.tabSummaryBadge}>{filteredAppointments.length} kayıt</span></div>
+            {filteredAppointments.length === 0 ? <p style={styles.emptyText}>Henüz randevunuz bulunmuyor.</p> : <div style={styles.patientAppointmentsScroll}><AppointmentTable appointments={filteredAppointments} getPatientName={getPatientName} getDoctorName={getDoctorName} getDepartmentName={getDepartmentName} formatDate={formatDate} onCancel={handleCancelAppointment} /></div>}
+          </div>}
+          {activePatientTab === 'history' && <div style={styles.patientTabContent}>
+            <div style={styles.patientHistoryHeader}><div><p style={styles.tabEyebrow}>KLİNİK GEÇMİŞ</p><h3 style={styles.sectionTitle}>Muayene ve Reçete Geçmişim</h3><p style={styles.formDescription}>Muayene notlarınızı ve reçetelerinizi güvenli biçimde görüntüleyin.</p></div><span style={styles.tabSummaryBadge}>{medicalRecords.length} muayene</span></div>
+            {medicalRecords.length === 0 ? <p style={styles.emptyText}>Henüz tamamlanmış bir muayene kaydınız bulunmuyor.</p> : (
+              <div style={styles.patientHistoryScroll}>
+                <div style={styles.doctorAppointmentList}>
+                {medicalRecords.map((record) => {
+                  const appointment = appointments.find((item) => item.id === record.appointment_id)
+                  const recordPrescriptions = prescriptions.filter((item) => item.medical_record_id === record.id)
+                  return <article key={record.id} style={styles.patientHealthCard}>
+                    <div style={styles.patientHealthCardHeader}><div><span style={styles.healthRecordBadge}>MUAYENE</span><strong style={styles.appointmentPatient}>{record.diagnosis}</strong><p style={styles.appointmentDetails}>{appointment ? `${getDoctorName(appointment.doctor_id)} · ${formatDate(record.created_at)}` : formatDate(record.created_at)}</p></div><span style={styles.completedBadge}>Tamamlandı</span></div>
+                    <p style={styles.patientHealthNotes}>{record.notes || 'Muayene notu bulunmuyor.'}</p>
+                    <div style={styles.prescriptionSection}><div style={styles.prescriptionSectionTitle}><span>▣</span><strong>Reçete</strong><span style={styles.prescriptionCount}>{recordPrescriptions.length}</span></div>{recordPrescriptions.length === 0 ? <span style={styles.waitingBadge}>Bu muayenede reçete oluşturulmadı.</span> : <div style={styles.prescriptionList}>{recordPrescriptions.map((item) => <div key={item.id} style={styles.prescriptionCard}><div style={styles.prescriptionMedicine}>{item.medicine_name}</div><div style={styles.prescriptionMeta}>{item.dosage}</div><span style={styles.prescriptionDuration}>{item.days} gün</span></div>)}</div>}</div>
+                  </article>
+                })}
                 </div>
-              })}
-            </div>
-          )}
+              </div>
+            )}
+          </div>}
+          {activePatientTab === 'notifications' && <div style={styles.patientTabContent}>
+            <div style={styles.patientHistoryHeader}><div><p style={styles.tabEyebrow}>RANDEVU BİLDİRİMLERİ</p><h3 style={styles.sectionTitle}>SMS Hatırlatmalarım</h3><p style={styles.formDescription}>Onaylanan randevularınız için hazırlanan otomatik hatırlatma mesajlarını burada görebilirsiniz.</p></div><span style={styles.tabSummaryBadge}>{smsReminders.length} bildirim</span></div>
+            {smsReminders.length === 0 ? <div style={styles.patientNotificationEmpty}><span style={styles.smsPhoneIcon}>SMS</span><div style={styles.patientNotificationEmptyText}><strong>Henüz SMS bildiriminiz yok</strong><small>Randevunuz onaylandığında 24 saat ve 2 saat öncesi için otomatik bildirim hazırlanır.</small></div></div> : <div style={styles.patientHistoryScroll}>{smsReminders.map((reminder) => <article key={reminder.id} style={styles.patientNotificationCard}><div style={styles.smsQueueMain}><span style={styles.smsPhoneIcon}>SMS</span><div style={styles.smsQueueInfo}><strong>{reminder.reminder_type} hatırlatması</strong><small>{formatDate(reminder.scheduled_for)} · {formatSmsStatus(reminder.status)}</small><p>{reminder.message}</p></div></div><span style={reminder.status === 'Gönderildi' ? styles.smsSentBadge : reminder.status === 'İptal Edildi' ? styles.cancelledBadge : styles.waitingBadge}>{formatSmsStatus(reminder.status)}</span></article>)}</div>}
+          </div>}
         </section>
       ) : role === 'secretary' ? (
         <>
@@ -1004,21 +1298,23 @@ function App() {
             <section id="appointment-management" style={styles.actionPanel}><div><h2 style={styles.panelTitle}>Randevu Yönetimi</h2><p style={styles.formDescription}>Hasta ve doktor randevularını yönetin.</p></div><button type="button" onClick={() => setIsAppointmentModalOpen(true)} style={styles.primaryButton}>+ Yeni Randevu Oluştur</button></section>
             <section style={requestedAppointments.length > 0 ? styles.approvalPanel : styles.approvalPanelEmpty}>
               <div style={styles.approvalHeader}><div><p style={styles.approvalEyebrow}>SEKRETER ONAYI</p><h2 style={styles.panelTitle}>Onay Bekleyen Hasta Talepleri</h2><p style={styles.formDescription}>Hastaların oluşturduğu randevu taleplerini inceleyerek onaylayın veya reddedin.</p></div><div style={styles.approvalHeaderActions}><button type="button" disabled={loading} onClick={loadData} style={styles.refreshRequestsButton}>↻ Talepleri Yenile</button><span style={requestedAppointments.length > 0 ? styles.approvalCount : styles.approvalCountEmpty}>{requestedAppointments.length}</span></div></div>
-              {requestedAppointments.length === 0 ? <div style={styles.approvalEmptyMessage}><span>✓</span><div><strong>Bekleyen talep bulunmuyor</strong><small>Yeni hasta talebi geldiğinde burada görünecektir.</small></div></div> : <div style={styles.approvalRequestList}>{requestedAppointments.map((appointment) => <article key={appointment.id} style={String(processingRequest?.id) === String(appointment.id) ? { ...styles.approvalRequestCard, ...styles.approvalRequestCardProcessing } : styles.approvalRequestCard}><div style={styles.approvalPatient}><div style={styles.patientAvatar}>{getPatientName(appointment.patient_id).split(' ').map((part) => part.charAt(0)).slice(0, 2).join('')}</div><div><strong style={styles.appointmentPatient}>{getPatientName(appointment.patient_id)}</strong><small style={styles.approvalMeta}>{getDoctorName(appointment.doctor_id)} · {formatDate(appointment.appointment_date)}</small>{appointment.request_note && <p style={styles.approvalNote}>“{appointment.request_note}”</p>}</div></div><div style={styles.approvalActions}><button type="button" disabled={Boolean(processingRequest)} onClick={() => handleAppointmentDecision(appointment.id, 'reject')} style={processingRequest ? styles.requestActionDisabled : styles.rejectRequestButton}>{String(processingRequest?.id) === String(appointment.id) && processingRequest?.decision === 'reject' ? 'Reddediliyor...' : 'Reddet'}</button><button type="button" disabled={Boolean(processingRequest)} onClick={() => handleAppointmentDecision(appointment.id, 'approve')} style={processingRequest ? styles.requestActionDisabled : styles.approveRequestButton}>{String(processingRequest?.id) === String(appointment.id) && processingRequest?.decision === 'approve' ? 'Onaylanıyor...' : 'Onayla'}</button></div></article>)}</div>}
+              {requestedAppointments.length === 0 ? <div style={styles.approvalEmptyMessage}><span>✓</span><div style={styles.approvalEmptyText}><strong>Bekleyen talep bulunmuyor</strong><small>Yeni hasta talebi geldiğinde burada görünecektir.</small></div></div> : <div style={styles.approvalRequestList}>{requestedAppointments.map((appointment) => <article key={appointment.id} style={String(processingRequest?.id) === String(appointment.id) ? { ...styles.approvalRequestCard, ...styles.approvalRequestCardProcessing } : styles.approvalRequestCard}><div style={styles.approvalPatient}><div style={styles.patientAvatar}>{getPatientName(appointment.patient_id).split(' ').map((part) => part.charAt(0)).slice(0, 2).join('')}</div><div><strong style={styles.appointmentPatient}>{getPatientName(appointment.patient_id)}</strong><small style={styles.approvalMeta}>{getDoctorName(appointment.doctor_id)} · {formatDate(appointment.appointment_date)}</small>{appointment.request_note && <p style={styles.approvalNote}>“{appointment.request_note}”</p>}</div></div><div style={styles.approvalActions}><button type="button" disabled={Boolean(processingRequest)} onClick={() => handleAppointmentDecision(appointment.id, 'reject')} style={processingRequest ? styles.requestActionDisabled : styles.rejectRequestButton}>{String(processingRequest?.id) === String(appointment.id) && processingRequest?.decision === 'reject' ? 'Reddediliyor...' : 'Reddet'}</button><button type="button" disabled={Boolean(processingRequest)} onClick={() => handleAppointmentDecision(appointment.id, 'approve')} style={processingRequest ? styles.requestActionDisabled : styles.approveRequestButton}>{String(processingRequest?.id) === String(appointment.id) && processingRequest?.decision === 'approve' ? 'Onaylanıyor...' : 'Onayla'}</button></div></article>)}</div>}
             </section>
             <section style={styles.appointmentListPanel}><div style={styles.panelHeading}><h2 style={styles.panelTitle}>Randevu Listesi</h2><span style={styles.resultCount}>{filteredAppointments.length}</span></div><SearchBox value={appointmentSearch} onChange={setAppointmentSearch} placeholder="Hasta veya doktor ara..." />{filteredAppointments.length === 0 ? <p style={styles.emptyText}>Henüz randevu bulunmuyor.</p> : <AppointmentTable appointments={filteredAppointments} getPatientName={getPatientName} getDoctorName={getDoctorName} getDepartmentName={getDepartmentName} formatDate={formatDate} onCancel={handleCancelAppointment} onApprove={(id) => handleAppointmentDecision(id, 'approve')} onReject={(id) => handleAppointmentDecision(id, 'reject')} compact />}</section>
           </div>}
 
           {activeSecretaryTab === 'patients' && <div style={styles.tabContent}><div style={styles.tabPageHeader}><div><p style={styles.tabEyebrow}>HASTA İŞLEMLERİ</p><h2 style={styles.tabPageTitle}>Hasta Yönetimi</h2><p style={styles.formDescription}>Kayıtlı hastaları görüntüleyin veya sisteme yeni hasta ekleyin.</p></div><span style={styles.tabSummaryBadge}>{patients.length} kayıtlı hasta</span></div><section className="patientWorkspace" style={styles.patientWorkspace}><div style={styles.patientListCard}><div style={styles.panelHeading}><div><h3 style={styles.cardSectionTitle}>Kayıtlı Hastalar</h3><p style={styles.cardSectionText}>Ad, soyad veya TC numarasıyla arayın.</p></div><span style={styles.resultCount}>{filteredPatients.length}</span></div><SearchBox value={patientSearch} onChange={setPatientSearch} placeholder="Hasta adı veya TC ara..." /><div style={styles.patientNameList}>{filteredPatients.map((patient) => <button className="patientListButton" key={patient.id} type="button" onClick={() => setSelectedPatientCard(patient)} style={styles.patientListButton}><div style={styles.patientAvatar}>{patient.first_name.charAt(0)}{patient.last_name.charAt(0)}</div><div style={styles.patientListButtonText}><strong style={styles.patientName}>{patient.first_name} {patient.last_name}</strong><small style={styles.patientMeta}>TC: {patient.tc_no.slice(0, 3)}******{patient.tc_no.slice(-2)}</small></div><span style={styles.patientDetailsArrow}>›</span></button>)}</div></div><section id="patient-registration" style={styles.patientFormCard}><div style={styles.patientFormHeader}><span style={styles.patientFormIcon}>+</span><div><h3 style={styles.cardSectionTitle}>Yeni Hasta Kaydı</h3><p style={styles.cardSectionText}>İlk kez başvuran hastanın temel bilgilerini girin.</p></div></div>{newPatientCredentials && <div style={{ ...styles.infoMessage, textAlign: 'left', marginBottom: 16 }}><strong>{newPatientCredentials.fullName}</strong><br />Kullanıcı adı: <strong>{newPatientCredentials.username}</strong><br />Geçici şifre: <strong>{newPatientCredentials.password}</strong><button type="button" onClick={() => setNewPatientCredentials(null)} style={{ ...styles.secondaryButton, marginTop: 8 }}>Bilgiyi Kapat</button></div>}<form onSubmit={handleAddPatient} style={styles.patientFormGrid}><Input label="TC Kimlik No" name="tc_no" value={patientForm.tc_no} onChange={handlePatientChange} placeholder="11 haneli TC no" maxLength={11} required /><Input label="Telefon" name="phone" value={patientForm.phone} onChange={handlePatientChange} placeholder="05XXXXXXXXX" required /><Input label="Ad" name="first_name" value={patientForm.first_name} onChange={handlePatientChange} placeholder="Hasta adı" required /><Input label="Soyad" name="last_name" value={patientForm.last_name} onChange={handlePatientChange} placeholder="Hasta soyadı" required /><label style={{ ...styles.label, gridColumn: '1 / -1' }}>Cinsiyet<select name="gender" value={patientForm.gender} onChange={handlePatientChange} style={styles.input}><option>Kadın</option><option>Erkek</option><option>Belirtmek istemiyor</option></select></label><button type="submit" disabled={saving} style={{ ...(saving ? styles.disabledButton : styles.saveButton), gridColumn: '1 / -1' }}>{saving && <Spinner />}{saving ? 'Kaydediliyor...' : 'Hasta Kaydet'}</button></form></section></section></div>}
 
-          {activeSecretaryTab === 'sms' && <div style={styles.tabContent}><section style={styles.smsHero}><div><p style={styles.tabEyebrow}>DEMO BİLDİRİM MERKEZİ</p><h2 style={styles.tabPageTitle}>SMS Hatırlatmaları</h2><p style={styles.formDescription}>Onaylanan randevular için 24 saat ve 2 saat öncesine planlanan mesajları takip edin.</p></div><button type="button" disabled={saving} onClick={handleRunDueSms} style={saving ? styles.disabledButton : styles.primaryButton}>{saving && <Spinner />}{saving ? 'Çalıştırılıyor...' : 'Zamanı Gelenleri Gönder'}</button></section><section style={styles.smsStatsGrid}><div style={styles.smsStatCard}><span style={styles.smsStatIcon}>◷</span><div><strong>{smsStats.pending}</strong><small>Bekleyen mesaj</small></div></div><div style={styles.smsStatCard}><span style={styles.smsStatIcon}>✓</span><div><strong>{smsStats.sent}</strong><small>Gönderildi</small></div></div><div style={styles.smsStatCard}><span style={styles.smsStatIcon}>×</span><div><strong>{smsStats.cancelled}</strong><small>İptal edildi</small></div></div></section><section style={styles.smsQueuePanel}><div style={styles.panelHeading}><div><h3 style={styles.cardSectionTitle}>Mesaj Kuyruğu</h3><p style={styles.cardSectionText}>Bu ekran demo gönderimini simüle eder; gerçek telefona SMS gönderilmez.</p></div><span style={styles.resultCount}>{smsReminders.length}</span></div>{smsReminders.length === 0 ? <div style={styles.doctorEmptyState}><span style={styles.doctorEmptyIcon}>✉</span><strong>Henüz SMS hatırlatması yok</strong><small>Bir randevu onaylandığında mesajlar otomatik hazırlanır.</small></div> : <div style={styles.smsQueueList}>{smsReminders.map((reminder) => <article key={reminder.id} style={styles.smsQueueCard}><div style={styles.smsQueueMain}><span style={styles.smsPhoneIcon}>SMS</span><div style={styles.smsQueueInfo}><strong>{getPatientName(reminder.patient_id)}</strong><small>{reminder.phone.slice(0, 4)}***{reminder.phone.slice(-4)} · {reminder.reminder_type}</small><p>{reminder.message}</p><span>Planlanan gönderim: {formatDate(reminder.scheduled_for)}</span></div></div><div style={styles.smsQueueAction}><span style={reminder.status === 'Gönderildi' ? styles.smsSentBadge : reminder.status === 'İptal Edildi' ? styles.cancelledBadge : styles.waitingBadge}>{reminder.status}</span>{reminder.status === 'Bekliyor' && <button type="button" disabled={saving} onClick={() => handleSimulateSmsSend(reminder.id)} style={styles.smsSendButton}>Şimdi Gönder</button>}</div></article>)}</div>}</section></div>}
+          {activeSecretaryTab === 'beds' && <BedManagement services={inpatientServices} beds={beds} patients={patients} onAssign={handleAssignBed} onDischarge={handleDischargePatient} saving={saving} canAssign={can('bed.assign')} canDischarge={can('bed.discharge')} />}
+
+          {activeSecretaryTab === 'sms' && <div style={styles.tabContent}><section style={styles.smsHero}><div><p style={styles.tabEyebrow}>OTOMATİK BİLDİRİM MERKEZİ</p><h2 style={styles.tabPageTitle}>SMS Hatırlatmaları</h2><p style={styles.formDescription}>Onaylanan randevular için 24 saat ve 2 saat öncesine planlanan mesajlar backend tarafından otomatik işlenir. Sekreterin manuel gönderim yapmasına gerek yoktur.</p></div><span style={styles.doctorBadge}>Otomatik aktif</span></section><section style={styles.smsStatsGrid}><div style={styles.smsStatCard}><span style={styles.smsStatIcon}>◷</span><div style={styles.smsStatContent}><strong style={styles.smsStatValue}>{smsStats.pending}</strong><small style={styles.smsStatLabel}>Planlanan mesaj</small></div></div><div style={styles.smsStatCard}><span style={styles.smsStatIcon}>✓</span><div style={styles.smsStatContent}><strong style={styles.smsStatValue}>{smsStats.sent}</strong><small style={styles.smsStatLabel}>Otomatik gönderildi</small></div></div><div style={styles.smsStatCard}><span style={styles.smsStatIcon}>×</span><div style={styles.smsStatContent}><strong style={styles.smsStatValue}>{smsStats.cancelled}</strong><small style={styles.smsStatLabel}>İptal edildi</small></div></div></section><section style={styles.smsQueuePanel}><div style={styles.panelHeading}><div><h3 style={styles.cardSectionTitle}>Mesaj Kuyruğu</h3><p style={styles.cardSectionText}>Backend her dakika zamanı gelen kayıtları otomatik olarak gönderildi durumuna geçirir. Bu proje ortamında gerçek telefon SMS’i gönderilmez.</p></div><span style={styles.resultCount}>{smsReminders.length}</span></div>{smsReminders.length === 0 ? <div style={styles.doctorEmptyState}><span style={styles.doctorEmptyIcon}>✉</span><strong>Henüz SMS hatırlatması yok</strong><small>Bir randevu onaylandığında mesajlar otomatik hazırlanır.</small></div> : <div style={styles.smsQueueList}>{smsReminders.map((reminder) => <article key={reminder.id} style={styles.smsQueueCard}><div style={styles.smsQueueMain}><span style={styles.smsPhoneIcon}>SMS</span><div style={styles.smsQueueInfo}><strong>{getPatientName(reminder.patient_id)}</strong><small>{reminder.phone.slice(0, 4)}***{reminder.phone.slice(-4)} · {reminder.reminder_type}</small><p>{reminder.message}</p><span>Planlanan gönderim: {formatDate(reminder.scheduled_for)}</span></div></div><div style={styles.smsQueueAction}><span style={reminder.status === 'Gönderildi' ? styles.smsSentBadge : reminder.status === 'İptal Edildi' ? styles.cancelledBadge : styles.waitingBadge}>{formatSmsStatus(reminder.status)}</span></div></article>)}</div>}</section></div>}
 
           {activeSecretaryTab === 'calendar' && <div style={styles.tabContent}><section style={styles.calendarPanelLarge}>
             <div style={styles.calendarHeader}>
               <div><p style={styles.eyebrowDark}>PLANLAMA MERKEZİ</p><h2 style={styles.panelTitle}>Randevu Takvimi</h2><p style={styles.formDescription}>Polikliniğinizdeki randevuları haftalık veya günlük görünümde yönetin.</p></div>
               <div style={styles.calendarActions}><button type="button" onClick={() => { setCalendarDate(getLocalToday()); setWeekOffset(0) }} style={styles.calendarTodayButton}>Bugün</button><button type="button" onClick={() => setCalendarView('day')} style={calendarView === 'day' ? styles.calendarViewActive : styles.calendarViewButton}>Günlük</button><button type="button" onClick={() => setCalendarView('week')} style={calendarView === 'week' ? styles.calendarViewActive : styles.calendarViewButton}>Haftalık</button><Input label="" type="date" value={calendarDate} onChange={(event) => { setCalendarDate(event.target.value); setWeekOffset(0) }} /></div>
             </div>
-            {outOfHoursAppointments.length > 0 && <div style={styles.calendarWarning}><div><strong>{outOfHoursAppointments.length} randevu çalışma saati dışında</strong><small>Bu kayıtları 08:00–17:30 aralığına taşıyın.</small></div><div style={styles.calendarWarningList}>{outOfHoursAppointments.map((appointment) => <button key={appointment.id} type="button" onClick={() => openRescheduleModal(appointment)} style={styles.calendarWarningButton}>{getPatientName(appointment.patient_id)} · {getLocalTimeKey(appointment.appointment_date)} · Düzelt</button>)}</div></div>}
+            {outOfHoursAppointments.length > 0 && <div style={styles.calendarWarning}><div style={styles.calendarWarningInfo}><strong style={styles.calendarWarningTitle}>{outOfHoursAppointments.length} randevu çalışma saati dışında</strong><small style={styles.calendarWarningText}>Bu kayıtları 08:00–17:30 aralığına taşıyın.</small></div><div style={styles.calendarWarningList}>{outOfHoursAppointments.map((appointment) => <button key={appointment.id} type="button" onClick={() => openRescheduleModal(appointment)} style={styles.calendarWarningButton}><span>{getPatientName(appointment.patient_id)}</span><small>{getLocalTimeKey(appointment.appointment_date)} · Düzelt</small></button>)}</div></div>}
             {calendarView === 'day' ? (
               <div key={`day-${calendarDate}-${calendarRevision}`} style={styles.calendarGrid}>{calendarAppointments.length === 0 ? <p style={styles.emptyText}>Bu gün için randevu bulunmuyor.</p> : calendarAppointments.map((appointment) => <div key={appointment.id} role={canRescheduleAppointment(appointment) ? 'button' : undefined} tabIndex={canRescheduleAppointment(appointment) ? 0 : undefined} title={canRescheduleAppointment(appointment) ? 'Tarih veya saati değiştirmek için tıklayın' : 'Bu randevu artık değiştirilemez'} onClick={() => canRescheduleAppointment(appointment) && openRescheduleModal(appointment)} onKeyDown={(event) => { if (canRescheduleAppointment(appointment) && (event.key === 'Enter' || event.key === ' ')) openRescheduleModal(appointment) }} style={{ ...styles.calendarItem, ...getCalendarStatusStyle(appointment.status), ...(canRescheduleAppointment(appointment) ? styles.calendarEditable : styles.calendarLocked) }}><strong style={styles.calendarTime}>{new Date(appointment.appointment_date).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</strong><div><strong>{getPatientName(appointment.patient_id)}</strong><small style={styles.calendarMeta}>{getDoctorName(appointment.doctor_id)} · {getDepartmentName(appointment.department_id)}</small></div><div style={styles.calendarStatusColumn}><span>{appointment.status}</span>{canRescheduleAppointment(appointment) && <small style={styles.calendarEditHint}>Değiştir</small>}</div></div>)}</div>
             ) : (
@@ -1031,14 +1327,15 @@ function App() {
       ) : (
         <div style={styles.tabContent}>
           <section style={styles.doctorWorkspaceHeader}>
-            <div><p style={styles.tabEyebrow}>DOKTOR ÇALIŞMA ALANI</p><h2 style={styles.tabPageTitle}>{activeDoctorTab === 'today' ? 'Bugünkü Randevular' : activeDoctorTab === 'waiting' ? 'Muayene Bekleyenler' : activeDoctorTab === 'completed' ? 'Tamamlanan Muayeneler' : 'Hasta Geçmişi'}</h2><p style={styles.formDescription}>{activeDoctorTab === 'today' ? 'Bugün planlanan hasta görüşmelerinizi saat sırasıyla takip edin.' : activeDoctorTab === 'waiting' ? 'Muayeneye alınmaya hazır onaylı hastaları yönetin.' : activeDoctorTab === 'completed' ? 'Tamamladığınız muayene kayıtlarını görüntüleyin.' : 'Önceki teşhis, muayene notu ve reçete bilgilerine ulaşın.'}</p></div>
+            <div><p style={styles.tabEyebrow}>DOKTOR ÇALIŞMA ALANI</p><h2 style={styles.tabPageTitle}>{activeDoctorTab === 'today' ? 'Bugünkü Randevular' : activeDoctorTab === 'waiting' ? 'Muayene Bekleyenler' : activeDoctorTab === 'completed' ? 'Tamamlanan Muayeneler' : activeDoctorTab === 'history' ? 'Hasta Geçmişi' : 'Servis Hastaları'}</h2><p style={styles.formDescription}>{activeDoctorTab === 'today' ? 'Bugün planlanan hasta görüşmelerinizi saat sırasıyla takip edin.' : activeDoctorTab === 'waiting' ? 'Muayeneye alınmaya hazır onaylı hastaları yönetin.' : activeDoctorTab === 'completed' ? 'Tamamladığınız muayeneleri görüntüleyin.' : activeDoctorTab === 'history' ? 'Önceki teşhis, muayene notu ve reçete bilgilerine ulaşın.' : 'Yataklı servislerde bulunan hastaların güncel durumunu görüntüleyin.'}</p></div>
             <div style={styles.doctorHeaderIdentity}><span style={styles.doctorOnlineDot}></span><div style={styles.doctorIdentityInfo}><strong style={styles.doctorIdentityName}>{user.full_name}</strong><small style={styles.doctorIdentityMeta}>{clinicDepartment?.name || 'Poliklinik'} · Aktif</small></div></div>
           </section>
 
-          {activeDoctorTab !== 'history' && <SearchBox value={appointmentSearch} onChange={setAppointmentSearch} placeholder="Hasta adı veya randevu durumu ara..." />}
+          {activeDoctorTab !== 'history' && activeDoctorTab !== 'inpatients' && <SearchBox value={appointmentSearch} onChange={setAppointmentSearch} placeholder="Hasta adı veya randevu durumu ara..." />}
           {activeDoctorTab === 'today' && <section style={styles.doctorPanel}>{renderDoctorAppointments(doctorTodayAppointments, 'Bugün için randevu bulunmuyor')}</section>}
           {activeDoctorTab === 'waiting' && <section style={styles.doctorPanel}>{renderDoctorAppointments(doctorWaitingAppointments, 'Muayene bekleyen hasta bulunmuyor')}</section>}
           {activeDoctorTab === 'completed' && <section style={styles.doctorPanel}>{renderDoctorAppointments(doctorCompletedAppointments, 'Tamamlanan muayene bulunmuyor')}</section>}
+          {activeDoctorTab === 'inpatients' && <BedManagement services={inpatientServices} beds={beds} patients={[]} readOnly={!can('bed.assign')} canAssign={can('bed.assign')} canDischarge={can('bed.discharge')} />}
           {activeDoctorTab === 'history' && <section style={styles.doctorPanel}>{medicalRecords.length === 0 ? <div style={styles.doctorEmptyState}><span style={styles.doctorEmptyIcon}>↺</span><strong>Hasta geçmişi bulunmuyor</strong><small>Tamamlanan muayeneler bu alanda görüntülenecektir.</small></div> : <div style={styles.medicalHistoryGrid}>{[...medicalRecords].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).map((record) => { const appointment = appointments.find((item) => item.id === record.appointment_id); const recordPrescriptions = prescriptions.filter((item) => item.medical_record_id === record.id); return <article key={record.id} style={styles.medicalHistoryCard}><div style={styles.medicalHistoryTop}><div><span style={styles.medicalRecordLabel}>MUAYENE KAYDI</span><h3 style={styles.medicalDiagnosis}>{record.diagnosis}</h3></div><span style={styles.completedBadge}>Tamamlandı</span></div><div style={styles.medicalPatientLine}><div style={styles.patientAvatar}>{appointment ? getPatientName(appointment.patient_id).split(' ').map((part) => part.charAt(0)).slice(0, 2).join('') : 'H'}</div><div style={styles.doctorIdentityInfo}><strong style={styles.doctorIdentityName}>{appointment ? getPatientName(appointment.patient_id) : 'Hasta bilgisi'}</strong><small style={styles.doctorIdentityMeta}>{formatDate(record.created_at)}</small></div></div><p style={styles.medicalNotes}>{record.notes || 'Muayene notu bulunmuyor.'}</p><div style={styles.prescriptionSummary}><strong>Reçete</strong>{recordPrescriptions.length === 0 ? <small>Reçete oluşturulmamış.</small> : recordPrescriptions.map((item) => <span key={item.id}>{item.medicine_name} · {item.dosage} · {item.days} gün</span>)}</div></article> })}</div>}</section>}
         </div>
       )}
@@ -1080,19 +1377,29 @@ function App() {
           {error && <p style={styles.modalError}>{error}</p>}
           <form onSubmit={handleCreateAppointment} style={styles.modalForm}>
             <Select label="Hasta" name="patient_id" value={appointmentForm.patient_id} onChange={updateForm(setAppointmentForm)} options={patients.map((item) => ({ value: item.id, label: `${item.first_name} ${item.last_name}` }))} placeholder="Hasta seçin" />
-            <Select label="Poliklinik" name="department_id" value={appointmentForm.department_id} onChange={updateForm(setAppointmentForm)} options={visibleDepartments.map((item) => ({ value: item.id, label: item.name }))} placeholder="Poliklinik seçin" />
+            <Select label="Poliklinik" name="department_id" value={appointmentForm.department_id} onChange={(event) => setAppointmentForm((previous) => ({ ...previous, department_id: event.target.value, doctor_id: '', date: '', time: '' }))} options={visibleDepartments.map((item) => ({ value: item.id, label: item.name }))} placeholder="Poliklinik seçin" />
             <Select 
   label="Doktor" 
   name="doctor_id" 
   value={appointmentForm.doctor_id} 
-  onChange={updateForm(setAppointmentForm)} 
+  onChange={(event) => {
+    const doctorId = event.target.value
+    const suggestion = doctorAppointmentSuggestions[doctorId]
+    setAppointmentForm((previous) => ({ ...previous, doctor_id: doctorId, date: suggestion?.date || '', time: suggestion?.time || '' }))
+  }} 
   // SADECE FİLTRELENMİŞ DOKTORLARI GÖSTER:
-  options={filteredDoctorsByDepartment.map((item) => ({ value: item.id, label: `Dr. ${item.first_name} ${item.last_name}` }))} 
+  options={filteredDoctorsByDepartment.map((item) => {
+    const suggestion = doctorAppointmentSuggestions[item.id]
+    const suggestionText = suggestion ? ` · En yakın uygun randevu: ${formatDateKeyForDisplay(suggestion.date)} ${suggestion.time}` : ' · Uygun randevu bulunamadı'
+    return { value: item.id, label: `Dr. ${item.first_name} ${item.last_name}${suggestionText}` }
+  })} 
   placeholder="Doktor seçin"
   // POLİKLİNİK SEÇİLMEDEN DOKTOR SEÇİMİNİ PASİF YAP:
   disabled={!appointmentForm.department_id} 
 />
-            <div style={styles.modalRow}><Input label="Tarih" name="date" type="date" min={getLocalToday()} value={appointmentForm.date} onChange={updateForm(setAppointmentForm)} required /><Input label="Saat" name="time" type="time" min={APPOINTMENT_START_TIME} max={APPOINTMENT_END_TIME} step="1800" value={appointmentForm.time} onChange={updateForm(setAppointmentForm)} required /></div>
+            {nearestAppointmentSuggestion && <div style={styles.appointmentSuggestion}><strong>En yakın uygun randevu</strong><span>Dr. {nearestAppointmentSuggestion.doctor.first_name} {nearestAppointmentSuggestion.doctor.last_name} · {formatDateKeyForDisplay(nearestAppointmentSuggestion.date)} · {nearestAppointmentSuggestion.time}</span><small>Poliklinik seçiminize ve mevcut randevu yoğunluğuna göre önerildi.</small></div>}
+            <div style={styles.modalRow}><Input label="Tarih" name="date" type="date" min={getLocalToday()} value={appointmentForm.date} onChange={updateForm(setAppointmentForm)} required /><Select label="Uygun Saat" name="time" value={appointmentForm.time} onChange={updateForm(setAppointmentForm)} options={availableAppointmentSlots} placeholder={availableAppointmentSlots.length ? 'Saat seçin' : 'Bu gün boş saat yok'} /></div>
+            {appointmentForm.doctor_id && appointmentForm.date && !availableAppointmentSlots.length && <p style={styles.modalHint}>Seçilen doktorun bu tarihte uygun saati bulunmuyor. Lütfen başka bir gün seçin.</p>}
             <Textarea label="Not (isteğe bağlı)" name="note" value={appointmentForm.note} onChange={updateForm(setAppointmentForm)} placeholder="Randevu notu..." />
             <ModalFooter onClose={() => setIsAppointmentModalOpen(false)} saving={saving} submitText="Randevuyu Kaydet" />
           </form>
