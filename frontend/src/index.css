@@ -209,6 +209,10 @@ input[type='search']::-webkit-search-cancel-button {
   .patientWorkspace {
     grid-template-columns: 1fr !important;
   }
+
+  .availabilityWorkspace {
+    grid-template-columns: 170px 1fr !important;
+  }
 }
 
 @media (max-width: 700px) {
@@ -223,6 +227,30 @@ input[type='search']::-webkit-search-cancel-button {
 
   .alertGrid {
     grid-template-columns: 1fr !important;
+  }
+
+  .calendarWarning {
+    align-items: stretch !important;
+    flex-direction: column;
+  }
+
+  .calendarWarningList {
+    justify-content: flex-start !important;
+  }
+
+  .availabilityToolbar {
+    align-items: flex-start !important;
+    flex-direction: column;
+  }
+
+  .availabilityWorkspace {
+    grid-template-columns: 1fr !important;
+  }
+
+  .availabilityDateList {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: 170px !important;
   }
 
   .loginPage {

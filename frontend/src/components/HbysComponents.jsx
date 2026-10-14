@@ -104,9 +104,10 @@ export function AppointmentTable({
   getDoctorName,
   getDepartmentName,
   formatDate,
-  onCancel,
-  onApprove,
-  onReject,
+    onCancel,
+    onApprove,
+    onReject,
+    onMarkNoShow,
   compact = false,
 }) {
   return (
@@ -132,8 +133,10 @@ export function AppointmentTable({
               <td style={styles.td}>
                 <span
                   style={
-                    appointment.status === 'Tamamlandı'
+                      appointment.status === 'Tamamlandı'
                       ? styles.completedBadge
+                      : appointment.status === 'Gelmedi'
+                        ? styles.noShowBadge
                       : appointment.status === 'İptal' || appointment.status === 'İptal Edildi' || appointment.status === 'Reddedildi'
                         ? styles.cancelledBadge
                         : styles.waitingBadge
@@ -158,6 +161,9 @@ export function AppointmentTable({
                     İptal Et
                   </button>
                 )}
+                {appointment.status === 'Bekliyor' && onMarkNoShow && new Date(appointment.appointment_date) <= new Date() && (
+                  <button type="button" onClick={() => onMarkNoShow(appointment.id)} style={styles.noShowButton}>Gelmedi</button>
+                )}
               </td>
             </tr>
           ))}
@@ -167,11 +173,11 @@ export function AppointmentTable({
   )
 }
 
-export function Modal({ title, onClose, children }) {
+export function Modal({ title, onClose, children, wide = false }) {
   return (
     <div style={styles.modalOverlay} onClick={onClose}>
       <div
-        style={styles.modalContent}
+        style={wide ? styles.modalContentWide : styles.modalContent}
         onClick={(event) => event.stopPropagation()}
       >
         <div style={styles.modalHeader}>
@@ -259,6 +265,11 @@ export function LoginScreen({ form, onChange, onSubmit, onDemoSelect, error, sav
     { group: 'secretaries', label: 'Çocuk Sağlığı', detail: 'Buse Yıldız', username: 'cocuk_demo', password: 'demo1234' },
     { group: 'secretaries', label: 'Ortopedi', detail: 'Emre Şahin', username: 'ortopedi_demo', password: 'demo1234' },
     { group: 'secretaries', label: 'Dermatoloji', detail: 'Seda Arslan', username: 'derma_demo', password: 'demo1234' },
+    { group: 'nurses', label: 'Dahiliye Servisi', detail: 'Dahiliye Hemşiresi', username: 'dahiliye_hemsire', password: 'demo1234' },
+    { group: 'nurses', label: 'Cerrahi Servisi', detail: 'Cerrahi Hemşiresi', username: 'cerrahi_hemsire', password: 'demo1234' },
+    { group: 'nurses', label: 'Çocuk Servisi', detail: 'Çocuk Servisi Hemşiresi', username: 'cocuk_hemsire', password: 'demo1234' },
+    { group: 'cleaners', label: 'Hastane Geneli', detail: 'Merkezi Temizlik Personeli', username: 'temizlik_personeli', password: 'demo1234' },
+    { group: 'cleaners', label: 'Hastane Geneli', detail: 'Ayşe Temizlik Personeli', username: 'temizlik_demo', password: 'demo1234' },
     { group: 'doctors', label: 'Dahiliye', detail: 'Dr. Ahmet Yılmaz', username: 'doktor', password: 'doktor123' },
     { group: 'doctors', label: 'Dahiliye', detail: 'Dr. Selin Akar', username: 'dahiliye_doktor2', password: 'demo1234' },
     { group: 'doctors', label: 'Dahiliye', detail: 'Dr. Bora Kılıç', username: 'dahiliye_doktor3', password: 'demo1234' },
@@ -289,6 +300,8 @@ export function LoginScreen({ form, onChange, onSubmit, onDemoSelect, error, sav
   const demoGroups = [
     { key: 'secretaries', label: 'Sekreterler' },
     { key: 'doctors', label: 'Doktorlar' },
+    { key: 'nurses', label: 'Hemşireler' },
+    { key: 'cleaners', label: 'Temizlik Personeli' },
     { key: 'patients', label: 'Hastalar' },
     { key: 'admin', label: 'Yönetici' },
   ]

@@ -67,6 +67,8 @@ class Prescription(SQLModel, table=True):
     medicine_name: str  # İlaç adı (Örn: "Parol 500mg")
     dosage: str  # Kullanım şekli (Örn: "Günde 2x1 tok karnına")
     days: int = 5  # Kaç günlük tedavi
+    prescription_number: Optional[str] = Field(default=None, unique=True, index=True)
+    barcode: Optional[str] = Field(default=None, unique=True, index=True)
 
 
 class AuditLog(SQLModel, table=True):
@@ -119,6 +121,7 @@ class Bed(SQLModel, table=True):
     room_id: int = Field(foreign_key="room.id", index=True)
     bed_number: str
     status: str = "Boş"  # Boş, Dolu, Temizlikte, Bakıma Ayrıldı
+    isolation_type: str = "Yok"  # Yok, Temas, Damlacık, Hava Yolu
     active: bool = True
 
 
@@ -131,3 +134,29 @@ class BedAssignment(SQLModel, table=True):
     admitted_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime))
     discharged_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
     status: str = "Yatıyor"  # Yatıyor, Taburcu Edildi
+    isolation_required: str = "Yok"
+    transfer_from_assignment_id: Optional[int] = Field(default=None, foreign_key="bedassignment.id")
+
+
+class BedHistory(SQLModel, table=True):
+    """Hastanın hangi yatağa ne zaman alındığını ve ne zaman çıktığını tutar."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    bed_id: int = Field(foreign_key="bed.id", index=True)
+    patient_id: int = Field(foreign_key="patient.id", index=True)
+    assignment_id: Optional[int] = Field(default=None, foreign_key="bedassignment.id", index=True)
+    admitted_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime))
+    discharged_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+
+
+class CleaningTask(SQLModel, table=True):
+    """Oda, bölüm veya yatak temizliğini takip eden görev kaydı."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    bed_id: int = Field(foreign_key="bed.id", index=True)
+    service_id: int = Field(foreign_key="inpatientservice.id", index=True)
+    location: Optional[str] = None
+    task_type: str = "Yatak / Oda"
+    status: str = "Bekliyor"  # Bekliyor, Devam Ediyor, Tamamlandı
+    assigned_to_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime))
+    started_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))
+    completed_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime))

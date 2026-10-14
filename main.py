@@ -7,11 +7,11 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlmodel import SQLModel, Session, select
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, update
 from database import engine, get_session
 from models import (
     User, Patient, Department, Doctor, Appointment, MedicalRecord, Prescription,
-    AuditLog, SMSReminder, InpatientService, Room, Bed, BedAssignment,
+    AuditLog, SMSReminder, InpatientService, Room, Bed, BedAssignment, BedHistory, CleaningTask,
 )
 
 app = FastAPI(title="HBYS Staj Projesi", version="1.0")
@@ -23,6 +23,7 @@ PASSWORD_ITERATIONS = 260_000
 # kullanıcı grubuna verilebilir; yönetici '*' ile tüm izinlere sahiptir.
 ROLE_PERMISSIONS = {
     "hasta": {
+        "appointment.view",
         "appointment.create",
         "appointment.cancel",
         "patient.view",
@@ -31,6 +32,7 @@ ROLE_PERMISSIONS = {
         "prescription.view.own",
     },
     "doktor": {
+        "appointment.view",
         "appointment.create",
         "appointment.cancel",
         "appointment.status.update",
@@ -43,6 +45,7 @@ ROLE_PERMISSIONS = {
         "bed.view",
     },
     "sekreter": {
+        "appointment.view",
         "patient.create",
         "patient.view",
         "appointment.create",
@@ -52,8 +55,21 @@ ROLE_PERMISSIONS = {
         "appointment.reschedule",
         "appointment.status.update",
         "bed.view",
+    },
+    "hemsire": {
+        "patient.view",
+        "bed.view",
         "bed.assign",
         "bed.discharge",
+        "bed.status.update",
+        "cleaning.view",
+        "cleaning.complete",
+    },
+    "temizlik_personeli": {
+        "bed.view",
+        "cleaning.view",
+        "cleaning.start",
+        "cleaning.complete",
     },
     "yonetici": {"*"},
 }
@@ -116,12 +132,17 @@ class BedAssignmentRequest(BaseModel):
     bed_id: int
     patient_id: int
     admission_reason: str | None = None
+    isolation_required: str = "Yok"
+
+class BedTransferRequest(BaseModel):
+    target_bed_id: int
+    reason: str | None = None
 
 
 def validate_appointment_working_hours(appointment_date: datetime):
     minute_of_day = appointment_date.hour * 60 + appointment_date.minute
-    if minute_of_day < 8 * 60 or minute_of_day > 17 * 60 + 30:
-        raise HTTPException(status_code=422, detail="Randevu saati 08:00 ile 17:30 arasında olmalıdır.")
+    if minute_of_day < 8 * 60 + 30 or minute_of_day > 17 * 60:
+        raise HTTPException(status_code=422, detail="Randevu saati 08:30 ile 17:00 arasında olmalıdır.")
     if appointment_date.minute not in {0, 30}:
         raise HTTPException(status_code=422, detail="Randevular yalnızca tam veya yarım saatlere oluşturulabilir.")
 
@@ -144,6 +165,31 @@ def require_permission(session: Session, user_id: int | None, permission: str) -
     if "*" not in permissions and permission not in permissions:
         raise HTTPException(status_code=403, detail="Bu işlem için yetkiniz bulunmuyor.")
     return user
+
+
+def secretary_can_access_service(session: Session, actor: User, service: InpatientService) -> bool:
+    """Sekreterin yataklı servis erişimini bağlı poliklinik ile sınırlar."""
+    if actor.role not in {"sekreter", "hemsire"}:
+        return True
+    if not actor.department_id:
+        return False
+    department = session.get(Department, actor.department_id)
+    if not department:
+        return False
+    department_name = department.name.casefold().replace(" servisi", "").strip()
+    service_name = (service.name or "").casefold().replace(" servisi", "").strip()
+    specialty = (service.specialty or "").casefold().strip()
+    return bool(department_name) and (
+        department_name == service_name
+        or department_name in service_name
+        or department_name == specialty
+        or department_name in specialty
+    )
+
+
+def require_service_access(session: Session, actor: User, service: InpatientService) -> None:
+    if not secretary_can_access_service(session, actor, service):
+        raise HTTPException(status_code=403, detail="Bu servise erişim yetkiniz bulunmuyor.")
 
 
 def validate_appointment_relations(session: Session, appointment: Appointment):
@@ -292,12 +338,54 @@ def on_startup():
         for column_name, column_type in appointment_migrations.items():
             if column_name not in appointment_columns:
                 connection.execute(text(f'ALTER TABLE appointment ADD COLUMN {column_name} {column_type}'))
+
+    bed_columns = {column['name'] for column in inspect(engine).get_columns('bed')}
+    with engine.begin() as connection:
+        if 'isolation_type' not in bed_columns:
+            connection.execute(text("ALTER TABLE bed ADD COLUMN isolation_type VARCHAR(30) DEFAULT 'Yok'"))
+    assignment_columns = {column['name'] for column in inspect(engine).get_columns('bedassignment')}
+    with engine.begin() as connection:
+        if 'isolation_required' not in assignment_columns:
+            connection.execute(text("ALTER TABLE bedassignment ADD COLUMN isolation_required VARCHAR(30) DEFAULT 'Yok'"))
+        if 'transfer_from_assignment_id' not in assignment_columns:
+            connection.execute(text("ALTER TABLE bedassignment ADD COLUMN transfer_from_assignment_id INTEGER"))
+
+    prescription_columns = {column['name'] for column in inspect(engine).get_columns('prescription')}
+    prescription_migrations = {
+        'prescription_number': 'VARCHAR(40)',
+        'barcode': 'VARCHAR(40)',
+    }
+    with engine.begin() as connection:
+        for column_name, column_type in prescription_migrations.items():
+            if column_name not in prescription_columns:
+                connection.execute(text(f'ALTER TABLE prescription ADD COLUMN {column_name} {column_type}'))
+
+    cleaning_task_columns = {column['name'] for column in inspect(engine).get_columns('cleaningtask')}
+    with engine.begin() as connection:
+        if 'location' not in cleaning_task_columns:
+            connection.execute(text('ALTER TABLE cleaningtask ADD COLUMN location VARCHAR(255)'))
+        if 'task_type' not in cleaning_task_columns:
+            connection.execute(text("ALTER TABLE cleaningtask ADD COLUMN task_type VARCHAR(60) DEFAULT 'Yatak / Oda'"))
+
+    # Eski demo reçetelerine de e-reçete numarası ve barkod ver.
+    with Session(engine) as prescription_session:
+        for prescription in prescription_session.exec(select(Prescription)).all():
+            changed = False
+            if not prescription.prescription_number:
+                prescription.prescription_number = f"EREC-{prescription.id:06d}"
+                changed = True
+            if not prescription.barcode:
+                prescription.barcode = f"HBYS-{prescription.id:08d}"
+                changed = True
+            if changed:
+                prescription_session.add(prescription)
+        prescription_session.commit()
     
     with Session(engine) as session:
         # Eksik poliklinikleri ekle; mevcut kayıtları silmeden çalışır.
         department_names = [
             "Dahiliye", "Göz Hastalıkları", "Kardiyoloji",
-            "Çocuk Sağlığı", "Ortopedi", "Dermatoloji",
+            "Çocuk Sağlığı", "Ortopedi", "Dermatoloji", "Genel Cerrahi",
         ]
         departments = {}
         for name in department_names:
@@ -389,6 +477,11 @@ def on_startup():
             ("cocuk_demo", "demo1234", "sekreter", "Buse Yıldız", departments["Çocuk Sağlığı"].id, None),
             ("ortopedi_demo", "demo1234", "sekreter", "Emre Şahin", departments["Ortopedi"].id, None),
             ("derma_demo", "demo1234", "sekreter", "Seda Arslan", departments["Dermatoloji"].id, None),
+            ("dahiliye_hemsire", "demo1234", "hemsire", "Dahiliye Hemşiresi", departments["Dahiliye"].id, None),
+            ("cerrahi_hemsire", "demo1234", "hemsire", "Cerrahi Hemşiresi", departments["Genel Cerrahi"].id, None),
+            ("cocuk_hemsire", "demo1234", "hemsire", "Çocuk Servisi Hemşiresi", departments["Çocuk Sağlığı"].id, None),
+            ("temizlik_personeli", "demo1234", "temizlik_personeli", "Merkezi Temizlik Personeli", None, None),
+            ("temizlik_demo", "demo1234", "temizlik_personeli", "Ayşe Temizlik Personeli", None, None),
         ]
         for username, password, role, full_name, department_id, doctor_id in user_seed:
             if not session.exec(select(User).where(User.username == username)).first():
@@ -423,7 +516,7 @@ def on_startup():
         # Benzersiz TC numaralarıyla örnek hastaları ekle.
         patient_seed = [
             ("Kübra", "Yılmaz", "10000000001", "05550000001", "Kadın"),
-            ("Ali", "Yılmaz", "10000000002", "05550000002", "Erkek"),
+            ("Uğur", "Yılmaz", "10000000002", "05550000002", "Erkek"),
             ("Nur", "Kaya", "10000000003", "05550000003", "Kadın"),
             ("Mert", "Aydın", "10000000004", "05550000004", "Erkek"),
             ("Seda", "Çelik", "10000000005", "05550000005", "Kadın"),
@@ -447,7 +540,7 @@ def on_startup():
 
         # Sunumda farklı hasta profillerini göstermek için kolay hatırlanan demo hesapları.
         patient_account_seed = [
-            (patients[1], "Ali_hasta", "demo1234"),
+            (patients[1], "ugur_hasta", "demo1234"),
             (patients[2], "nur_hasta", "demo1234"),
             (patients[3], "mert_hasta", "demo1234"),
             (patients[4], "seda_hasta", "demo1234"),
@@ -527,6 +620,70 @@ def on_startup():
             exists = session.exec(select(Appointment).where(Appointment.patient_id == patients[patient_index].id, Appointment.doctor_id == doctor.id, Appointment.appointment_date == appointment_date)).first()
             if not exists:
                 session.add(Appointment(patient_id=patients[patient_index].id, doctor_id=doctor.id, department_id=doctor.department_id, appointment_date=appointment_date, status=status))
+
+        # Devlet hastanesi akışını gerçekçi göstermek için her doktorun
+        # hafta içi her gün birkaç hastası bulunur. Tüm slotlar doldurulmaz;
+        # böylece uygun randevu arama ekranında boş saatler kalır.
+        daily_slot_offsets = (0, 7)
+        for day_offset in range(0, 10):
+            candidate_day = datetime.now() + timedelta(days=day_offset)
+            if candidate_day.weekday() >= 5:
+                continue
+            for doctor_index, doctor in enumerate(doctors.values()):
+                for slot_index, slot_offset in enumerate(daily_slot_offsets):
+                    total_minutes = 8 * 60 + 30 + ((doctor_index * 2 + slot_offset) % 18) * 30
+                    appointment_date = candidate_day.replace(hour=total_minutes // 60, minute=total_minutes % 60, second=0, microsecond=0)
+                    if appointment_date <= datetime.now():
+                        continue
+                    patient_index = (doctor_index + day_offset + slot_index) % len(patients)
+                    patient = patients[patient_index]
+                    exists = session.exec(select(Appointment).where(
+                        Appointment.doctor_id == doctor.id,
+                        Appointment.appointment_date == appointment_date,
+                    )).first()
+                    patient_busy = session.exec(select(Appointment).where(
+                        Appointment.patient_id == patient.id,
+                        Appointment.appointment_date == appointment_date,
+                        Appointment.status.notin_(["İptal", "İptal Edildi", "Reddedildi"]),
+                    )).first()
+                    if not exists and not patient_busy:
+                        session.add(Appointment(
+                            patient_id=patient.id,
+                            doctor_id=doctor.id,
+                            department_id=doctor.department_id,
+                            appointment_date=appointment_date,
+                            status="Onaylandı" if slot_index == 0 else "Bekliyor",
+                            request_note="Günlük poliklinik akışı için örnek randevu",
+                        ))
+            # Hasta çakışması nedeniyle boş kalan doktor günü varsa, o günün
+            # başka bir boş slotuna en az bir örnek randevu yerleştir.
+            for doctor_index, doctor in enumerate(doctors.values()):
+                day_start = candidate_day.replace(hour=0, minute=0, second=0, microsecond=0)
+                has_day_appointment = session.exec(select(Appointment).where(
+                    Appointment.doctor_id == doctor.id,
+                    Appointment.appointment_date >= day_start,
+                    Appointment.appointment_date < day_start + timedelta(days=1),
+                    Appointment.status.notin_(["İptal", "İptal Edildi", "Reddedildi"]),
+                )).first()
+                if has_day_appointment:
+                    continue
+                for slot_index in range(18):
+                    total_minutes = 8 * 60 + 30 + slot_index * 30
+                    appointment_date = candidate_day.replace(hour=total_minutes // 60, minute=total_minutes % 60, second=0, microsecond=0)
+                    if appointment_date <= datetime.now():
+                        continue
+                    for patient in patients:
+                        patient_busy = session.exec(select(Appointment).where(
+                            Appointment.patient_id == patient.id,
+                            Appointment.appointment_date == appointment_date,
+                            Appointment.status.notin_(["İptal", "İptal Edildi", "Reddedildi"]),
+                        )).first()
+                        if not patient_busy:
+                            session.add(Appointment(patient_id=patient.id, doctor_id=doctor.id, department_id=doctor.department_id, appointment_date=appointment_date, status="Bekliyor", request_note="Günlük poliklinik akışı için örnek randevu"))
+                            break
+                    else:
+                        continue
+                    break
         session.commit()
 
         # Mevcut ve yeni gelecek randevular için eksik demo SMS kayıtlarını hazırla.
@@ -641,6 +798,7 @@ def create_patient(patient: Patient, user_id: int | None = None, session: Sessio
 def get_patients(
     patient_id: int | None = None,
     user_id: int | None = None,
+    available_for_admission: bool = False,
     session: Session = Depends(get_session),
 ):
     actor = require_permission(session, user_id, "patient.view")
@@ -659,6 +817,12 @@ def get_patients(
         ).distinct()
     if patient_id:
         query = query.where(Patient.id == patient_id)
+    if available_for_admission:
+        admitted_patient_ids = [assignment.patient_id for assignment in session.exec(
+            select(BedAssignment).where(BedAssignment.status == "Yatıyor")
+        ).all()]
+        if admitted_patient_ids:
+            query = query.where(~Patient.id.in_(admitted_patient_ids))
     return session.exec(query).all()
 
 # 🏢 --- Poliklinik (Department) Endpointleri ---
@@ -670,7 +834,11 @@ def create_department(department: Department, session: Session = Depends(get_ses
     return department
 
 @app.get("/departments/", response_model=list[Department])
-def get_departments(session: Session = Depends(get_session)):
+def get_departments(user_id: int | None = None, session: Session = Depends(get_session)):
+    if user_id:
+        actor = require_user(session, user_id)
+        if actor.role == "sekreter" and actor.department_id:
+            return session.exec(select(Department).where(Department.id == actor.department_id)).all()
     return session.exec(select(Department)).all()
 
 # 🩺 --- Doktor (Doctor) Endpointleri ---
@@ -682,11 +850,22 @@ def create_doctor(doctor: Doctor, session: Session = Depends(get_session)):
     return doctor
 
 @app.get("/doctors/", response_model=list[Doctor])
-def get_doctors(session: Session = Depends(get_session)):
+def get_doctors(user_id: int | None = None, session: Session = Depends(get_session)):
+    if user_id:
+        actor = require_user(session, user_id)
+        if actor.role == "sekreter" and actor.department_id:
+            return session.exec(select(Doctor).where(Doctor.department_id == actor.department_id)).all()
     return session.exec(select(Doctor)).all()
 
 
 # 🛏️ --- Yataklı Servis ve Yatış Endpointleri ---
+def first_cleaning_personnel_id(session: Session) -> int | None:
+    cleaner = session.exec(
+        select(User).where(User.role == "temizlik_personeli").order_by(User.id)
+    ).first()
+    return cleaner.id if cleaner else None
+
+
 def serialize_bed(session: Session, bed: Bed):
     room = session.get(Room, bed.room_id)
     service = session.get(InpatientService, room.service_id) if room else None
@@ -695,6 +874,10 @@ def serialize_bed(session: Session, bed: Bed):
         BedAssignment.status == "Yatıyor",
     )).first()
     patient = session.get(Patient, assignment.patient_id) if assignment else None
+    cleaning_task = session.exec(select(CleaningTask).where(
+        CleaningTask.bed_id == bed.id,
+        CleaningTask.status != "Tamamlandı",
+    ).order_by(CleaningTask.created_at.desc())).first()
     return {
         "id": bed.id,
         "bed_number": bed.bed_number,
@@ -709,13 +892,17 @@ def serialize_bed(session: Session, bed: Bed):
         "assignment_id": assignment.id if assignment else None,
         "patient_id": patient.id if patient else None,
         "patient_name": f"{patient.first_name} {patient.last_name}" if patient else None,
+        "cleaning_task_id": cleaning_task.id if cleaning_task else None,
+        "cleaning_task_status": cleaning_task.status if cleaning_task else None,
+        "isolation_type": bed.isolation_type,
     }
 
 
 @app.get("/inpatient-services/")
 def get_inpatient_services(user_id: int | None = None, session: Session = Depends(get_session)):
-    require_permission(session, user_id, "bed.view")
+    actor = require_permission(session, user_id, "bed.view")
     services = session.exec(select(InpatientService).where(InpatientService.active == True)).all()
+    services = [service for service in services if secretary_can_access_service(session, actor, service)]
     result = []
     for service in services:
         rooms = session.exec(select(Room).where(Room.service_id == service.id, Room.active == True)).all()
@@ -735,11 +922,88 @@ def get_inpatient_services(user_id: int | None = None, session: Session = Depend
 
 @app.get("/beds/")
 def get_beds(service_id: int | None = None, user_id: int | None = None, session: Session = Depends(get_session)):
-    require_permission(session, user_id, "bed.view")
+    actor = require_permission(session, user_id, "bed.view")
     query = select(Bed).where(Bed.active == True)
     if service_id:
+        service = session.get(InpatientService, service_id)
+        if not service:
+            raise HTTPException(status_code=404, detail="Yataklı servis bulunamadı.")
+        require_service_access(session, actor, service)
         query = query.join(Room, Room.id == Bed.room_id).where(Room.service_id == service_id)
+    elif actor.role in {"sekreter", "hemsire"}:
+        allowed_service_ids = [service.id for service in session.exec(select(InpatientService).where(InpatientService.active == True)).all() if secretary_can_access_service(session, actor, service)]
+        query = query.join(Room, Room.id == Bed.room_id).where(Room.service_id.in_(allowed_service_ids)) if allowed_service_ids else query.where(Bed.id == -1)
     return [serialize_bed(session, bed) for bed in session.exec(query).all()]
+
+
+@app.get("/cleaning-tasks/")
+def get_cleaning_tasks(user_id: int | None = None, session: Session = Depends(get_session)):
+    """Yönetici tüm görevleri, temizlik personeli ise kendisine atanmış görevleri görür."""
+    actor = require_permission(session, user_id, "cleaning.view")
+    tasks = session.exec(select(CleaningTask).where(CleaningTask.status != "Tamamlandı").order_by(CleaningTask.created_at.desc())).all()
+    result = []
+    for task in tasks:
+        if actor.role == "temizlik_personeli" and task.assigned_to_user_id not in {None, actor.id}:
+            continue
+        bed = session.get(Bed, task.bed_id)
+        room = session.get(Room, bed.room_id) if bed else None
+        service = session.get(InpatientService, task.service_id)
+        if not bed or not room or not service or not secretary_can_access_service(session, actor, service):
+            continue
+        result.append({"id": task.id, "bed_id": task.bed_id, "bed_number": bed.bed_number, "room_number": room.room_number, "service_name": service.name, "location": task.location or f"{service.name} / Oda {room.room_number} / Yatak {bed.bed_number}", "task_type": task.task_type, "status": task.status, "assigned_to_user_id": task.assigned_to_user_id, "created_at": task.created_at, "started_at": task.started_at})
+    return result
+
+
+@app.patch("/cleaning-tasks/{task_id}/complete")
+def complete_cleaning_task(task_id: int, user_id: int | None = None, session: Session = Depends(get_session)):
+    """Temizlik görevini tamamlar ve yatağı tekrar Boş yapar."""
+    actor = require_permission(session, user_id, "cleaning.complete")
+    task = session.get(CleaningTask, task_id)
+    if not task or task.status == "Tamamlandı":
+        raise HTTPException(status_code=404, detail="Aktif temizlik görevi bulunamadı.")
+    bed = session.get(Bed, task.bed_id)
+    service = session.get(InpatientService, task.service_id)
+    if not bed or not service:
+        raise HTTPException(status_code=404, detail="Temizlik görevinin yatağı bulunamadı.")
+    if actor.role == "temizlik_personeli" and task.assigned_to_user_id not in {None, actor.id}:
+        raise HTTPException(status_code=403, detail="Bu görev size atanmamış.")
+    require_service_access(session, actor, service)
+    if bed.status != "Temizlikte":
+        raise HTTPException(status_code=409, detail="Bu yatak artık temizlik beklemiyor.")
+    now = datetime.utcnow()
+    task.status = "Tamamlandı"
+    task.assigned_to_user_id = actor.id
+    task.completed_at = now
+    bed.status = "Boş"
+    session.add(task)
+    session.add(bed)
+    session.commit()
+    session.add(AuditLog(user_id=actor.id, action="YATAK_TEMIZLIGI_TAMAMLANDI", entity_type="CleaningTask", entity_id=task.id, details=f"Yatak: {bed.bed_number}"))
+    session.commit()
+    return {"task": task, "bed": serialize_bed(session, bed)}
+
+
+@app.patch("/cleaning-tasks/{task_id}/start")
+def start_cleaning_task(task_id: int, user_id: int | None = None, session: Session = Depends(get_session)):
+    actor = require_permission(session, user_id, "cleaning.start")
+    task = session.get(CleaningTask, task_id)
+    if not task or task.status == "Tamamlandı":
+        raise HTTPException(status_code=404, detail="Aktif temizlik görevi bulunamadı.")
+    service = session.get(InpatientService, task.service_id)
+    if not service:
+        raise HTTPException(status_code=404, detail="Servis bulunamadı.")
+    if actor.role == "temizlik_personeli" and task.assigned_to_user_id not in {None, actor.id}:
+        raise HTTPException(status_code=403, detail="Bu görev size atanmamış.")
+    require_service_access(session, actor, service)
+    if task.status != "Bekliyor":
+        raise HTTPException(status_code=409, detail="Bu görev başlatılmaya uygun değil.")
+    task.status = "Devam Ediyor"
+    task.assigned_to_user_id = actor.id
+    task.started_at = datetime.utcnow()
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+    return task
 
 
 @app.patch("/beds/{bed_id}/status")
@@ -750,6 +1014,11 @@ def update_bed_status(bed_id: int, status: str, user_id: int | None = None, sess
     bed = session.get(Bed, bed_id)
     if not bed:
         raise HTTPException(status_code=404, detail="Yatak bulunamadı.")
+    room = session.get(Room, bed.room_id)
+    service = session.get(InpatientService, room.service_id) if room else None
+    if not service:
+        raise HTTPException(status_code=404, detail="Yatağın bağlı olduğu servis bulunamadı.")
+    require_service_access(session, actor, service)
     if status == "Boş" and session.exec(select(BedAssignment).where(BedAssignment.bed_id == bed.id, BedAssignment.status == "Yatıyor")).first():
         raise HTTPException(status_code=409, detail="Yatan hasta bulunan yatak boş yapılamaz.")
     previous_status = bed.status
@@ -769,7 +1038,18 @@ def assign_bed(payload: BedAssignmentRequest, user_id: int | None = None, sessio
     patient = session.get(Patient, payload.patient_id)
     if not bed or not bed.active or not patient:
         raise HTTPException(status_code=404, detail="Aktif yatak veya hasta bulunamadı.")
-    if bed.status != "Boş":
+    room = session.get(Room, bed.room_id)
+    service = session.get(InpatientService, room.service_id) if room else None
+    if not service:
+        raise HTTPException(status_code=404, detail="Yatağın bağlı olduğu servis bulunamadı.")
+    require_service_access(session, actor, service)
+    allowed_isolation = {"Yok", "Temas", "Damlacık", "Hava Yolu"}
+    if payload.isolation_required not in allowed_isolation:
+        raise HTTPException(status_code=422, detail="Geçersiz izolasyon türü.")
+    if payload.isolation_required != "Yok" and bed.isolation_type not in {payload.isolation_required, "Yok"}:
+        raise HTTPException(status_code=409, detail="Bu yatak seçilen izolasyon gereksinimine uygun değil.")
+    atomic_result = session.exec(update(Bed).where(Bed.id == bed.id, Bed.status == "Boş").values(status="Dolu"))
+    if atomic_result.rowcount != 1:
         raise HTTPException(status_code=409, detail="Bu yatak şu anda boş değil.")
     existing_patient = session.exec(select(BedAssignment).where(
         BedAssignment.patient_id == patient.id,
@@ -777,15 +1057,72 @@ def assign_bed(payload: BedAssignmentRequest, user_id: int | None = None, sessio
     )).first()
     if existing_patient:
         raise HTTPException(status_code=409, detail="Bu hasta zaten başka bir yatakta yatıyor.")
-    assignment = BedAssignment(bed_id=bed.id, patient_id=patient.id, admission_reason=payload.admission_reason)
-    bed.status = "Dolu"
+    assignment = BedAssignment(bed_id=bed.id, patient_id=patient.id, admission_reason=payload.admission_reason, isolation_required=payload.isolation_required)
+    session.refresh(bed)
     session.add(assignment)
     session.add(bed)
+    session.flush()
+    session.add(BedHistory(bed_id=bed.id, patient_id=patient.id, assignment_id=assignment.id))
     session.commit()
     session.refresh(assignment)
     session.add(AuditLog(user_id=actor.id, action="HASTA_YATAGA_YATIRILDI", entity_type="BedAssignment", entity_id=assignment.id, details=f"Hasta: {patient.id}, Yatak: {bed.bed_number}"))
     session.commit()
     return {"assignment": assignment, "bed": serialize_bed(session, bed)}
+
+
+@app.post("/bed-assignments/{assignment_id}/transfer")
+def transfer_patient(assignment_id: int, payload: BedTransferRequest, user_id: int | None = None, session: Session = Depends(get_session)):
+    actor = require_permission(session, user_id, "bed.assign")
+    current = session.get(BedAssignment, assignment_id)
+    target = session.get(Bed, payload.target_bed_id)
+    if not current or current.status != "Yatıyor" or not target or not target.active:
+        raise HTTPException(status_code=404, detail="Aktif yatış veya hedef yatak bulunamadı.")
+    source = session.get(Bed, current.bed_id)
+    target_room = session.get(Room, target.room_id)
+    target_service = session.get(InpatientService, target_room.service_id) if target_room else None
+    if not source or not target_service:
+        raise HTTPException(status_code=404, detail="Yatak-servis ilişkisi bulunamadı.")
+    require_service_access(session, actor, target_service)
+    if target.status != "Boş":
+        raise HTTPException(status_code=409, detail="Hedef yatak boş değil.")
+    if source.id == target.id:
+        raise HTTPException(status_code=422, detail="Hasta zaten bu yatakta yatıyor.")
+    atomic_result = session.exec(update(Bed).where(Bed.id == target.id, Bed.status == "Boş").values(status="Dolu"))
+    if atomic_result.rowcount != 1:
+        raise HTTPException(status_code=409, detail="Hedef yatak başka bir işlemle dolduruldu.")
+    now = datetime.utcnow()
+    current.status = "Taburcu Edildi"
+    current.discharged_at = now
+    current.admission_reason = f"Transfer: {payload.reason or 'servis içi yatak değişikliği'}"
+    source.status = "Temizlikte"
+    new_assignment = BedAssignment(bed_id=target.id, patient_id=current.patient_id, admission_reason=payload.reason or "Yatak transferi", isolation_required=current.isolation_required, transfer_from_assignment_id=current.id)
+    session.add(current)
+    session.add(source)
+    session.add(new_assignment)
+    session.flush()
+    old_history = session.exec(select(BedHistory).where(BedHistory.assignment_id == current.id, BedHistory.discharged_at.is_(None))).first()
+    if old_history:
+        old_history.discharged_at = now
+        session.add(old_history)
+    session.add(BedHistory(bed_id=target.id, patient_id=current.patient_id, assignment_id=new_assignment.id))
+    if not session.exec(select(CleaningTask).where(CleaningTask.bed_id == source.id, CleaningTask.status != "Tamamlandı")).first():
+        source_room = session.get(Room, source.room_id)
+        source_service = session.get(InpatientService, source_room.service_id) if source_room else None
+        if source_service:
+            source_room = session.get(Room, source.room_id)
+            session.add(CleaningTask(
+                bed_id=source.id,
+                service_id=source_service.id,
+                location=f"{source_service.name} / Oda {source_room.room_number if source_room else '-'} / Yatak {source.bed_number}",
+                task_type="Yatak / Oda",
+                assigned_to_user_id=first_cleaning_personnel_id(session),
+                status="Bekliyor",
+            ))
+    session.commit()
+    session.add(AuditLog(user_id=actor.id, action="HASTA_YATAK_TRANSFERI", entity_type="BedAssignment", entity_id=new_assignment.id, details=f"Eski yatak: {source.bed_number}, Yeni yatak: {target.bed_number}"))
+    session.commit()
+    session.refresh(new_assignment)
+    return {"assignment": new_assignment, "bed": serialize_bed(session, target), "source_bed": serialize_bed(session, source)}
 
 
 @app.patch("/bed-assignments/{assignment_id}/discharge")
@@ -795,18 +1132,70 @@ def discharge_patient(assignment_id: int, user_id: int | None = None, session: S
     if not assignment or assignment.status != "Yatıyor":
         raise HTTPException(status_code=404, detail="Aktif yatış kaydı bulunamadı.")
     bed = session.get(Bed, assignment.bed_id)
+    room = session.get(Room, bed.room_id) if bed else None
+    service = session.get(InpatientService, room.service_id) if room else None
+    if not service:
+        raise HTTPException(status_code=404, detail="Yatağın bağlı olduğu servis bulunamadı.")
+    require_service_access(session, actor, service)
     assignment.status = "Taburcu Edildi"
     assignment.discharged_at = datetime.utcnow()
+    history = session.exec(select(BedHistory).where(
+        BedHistory.assignment_id == assignment.id,
+        BedHistory.discharged_at.is_(None),
+    )).first()
+    if history:
+        history.discharged_at = assignment.discharged_at
+        session.add(history)
     if bed:
-        # Demo HBYS akışında taburcu işlemi sonrası temizlik süreci otomatik
-        # tamamlanmış kabul edilir; sekreterin ikinci bir işlem yapmasına gerek kalmaz.
-        bed.status = "Boş"
+        # Gerçekçi yatak akışı: taburcu sonrası yatak hemen yeni hastaya açılmaz.
+        # Önce temizlik bekler; hemşire temizliği tamamlayınca tekrar Boş yapılır.
+        bed.status = "Temizlikte"
         session.add(bed)
+        if service:
+            active_cleaning = session.exec(select(CleaningTask).where(
+                CleaningTask.bed_id == bed.id,
+                CleaningTask.status != "Tamamlandı",
+            )).first()
+            if not active_cleaning:
+                session.add(CleaningTask(
+                    bed_id=bed.id,
+                    service_id=service.id,
+                    location=f"{service.name} / Oda {room.room_number if room else '-'} / Yatak {bed.bed_number}",
+                    task_type="Yatak / Oda",
+                    assigned_to_user_id=first_cleaning_personnel_id(session),
+                    status="Bekliyor",
+                ))
     session.add(assignment)
     session.commit()
     session.add(AuditLog(user_id=actor.id, action="HASTA_TABURCU_EDILDI", entity_type="BedAssignment", entity_id=assignment.id, details=f"Yatak: {bed.bed_number if bed else assignment.bed_id}"))
     session.commit()
     return {"assignment": assignment, "bed": serialize_bed(session, bed) if bed else None}
+
+
+@app.get("/bed-history/{patient_id}")
+def get_bed_history(patient_id: int, user_id: int | None = None, session: Session = Depends(get_session)):
+    """Hastanın geçmiş yatak/servis hareketlerini raporlamak için kullanılır."""
+    actor = require_permission(session, user_id, "bed.view")
+    if actor.role == "hasta" and actor.patient_id != patient_id:
+        raise HTTPException(status_code=403, detail="Bu hastanın yatış geçmişine erişemezsiniz.")
+    history = session.exec(select(BedHistory).where(BedHistory.patient_id == patient_id).order_by(BedHistory.admitted_at.desc())).all()
+    result = []
+    for item in history:
+        bed = session.get(Bed, item.bed_id)
+        room = session.get(Room, bed.room_id) if bed else None
+        service = session.get(InpatientService, room.service_id) if room else None
+        result.append({
+            "id": item.id,
+            "assignment_id": item.assignment_id,
+            "patient_id": item.patient_id,
+            "bed_id": item.bed_id,
+            "bed_number": bed.bed_number if bed else None,
+            "room_number": room.room_number if room else None,
+            "service_name": service.name if service else None,
+            "admitted_at": item.admitted_at,
+            "discharged_at": item.discharged_at,
+        })
+    return result
 
 # 📅 --- Randevu (Appointment) Endpointleri ---
 @app.post("/appointments/", response_model=Appointment)
@@ -905,9 +1294,18 @@ def get_appointments(
     doctor_id: int | None = None,
     department_id: int | None = None,
     patient_id: int | None = None,
+    user_id: int | None = None,
     session: Session = Depends(get_session),
 ):
+    actor = require_permission(session, user_id, "appointment.view")
     query = select(Appointment)
+    if actor.role == "sekreter" and actor.department_id:
+        department_id = actor.department_id
+    elif actor.role == "doktor" and actor.doctor_id:
+        doctor_id = actor.doctor_id
+    elif actor.role == "hasta" and actor.patient_id:
+        patient_id = actor.patient_id
+
     if doctor_id:
         query = query.where(Appointment.doctor_id == doctor_id)
     if department_id:
@@ -1229,7 +1627,7 @@ def get_medical_records(patient_id: int | None = None, doctor_id: int | None = N
             query = query.where(Appointment.doctor_id == doctor_id)
     return session.exec(query).all()
 
-
+# 💊 --- Reçete (Prescription) Endpointleri ---
 @app.post("/prescriptions/", response_model=Prescription)
 def create_prescription(prescription: Prescription, user_id: int | None = None, session: Session = Depends(get_session)):
     actor = require_permission(session, user_id, "prescription.create")
@@ -1237,6 +1635,11 @@ def create_prescription(prescription: Prescription, user_id: int | None = None, 
     appointment = session.get(Appointment, record.appointment_id) if record else None
     if not record or not appointment or appointment.doctor_id != actor.doctor_id:
         raise HTTPException(status_code=403, detail="Bu muayene için reçete yazma yetkiniz yok.")
+    session.add(prescription)
+    session.commit()
+    session.refresh(prescription)
+    prescription.prescription_number = f"EREC-{datetime.now().strftime('%Y%m%d')}-{prescription.id:06d}"
+    prescription.barcode = f"HBYS-{datetime.now().strftime('%Y%m%d')}-{prescription.id:08d}"
     session.add(prescription)
     session.commit()
     session.refresh(prescription)
