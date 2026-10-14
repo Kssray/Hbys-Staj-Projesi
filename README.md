@@ -55,11 +55,46 @@ SQLModel tabanlı ilişkisel veritabanı şeması şu ana varlıkları içerir:
 *   `InpatientService`, `Room`, `Bed`, `BedAssignment`
 *   `CleaningTask` (Taburcu ve transfer işlemlerinde tetiklenir)
 
+Markdown
 ## ⚙️ Kurulum ve Çalıştırma
 
 Projeyi lokal ortamınızda çalıştırmak için aşağıdaki adımları izleyebilirsiniz. Bilgisayarınızda **Python 3.8+** ve **Node.js** yüklü olduğundan emin olun.
 
 ### 1. Projeyi Klonlayın
 ```bash
-git clone [https://github.com/kullaniciadi/hbys-project.git](https://github.com/kullaniciadi/hbys-project.git)
-cd hbys-project
+git clone [https://github.com/Kssray/Hbys-Staj-Projesi.git](https://github.com/Kssray/Hbys-Staj-Projesi.git)
+cd Hbys-Staj-Projesi
+2. Backend (FastAPI) Kurulumu
+Yeni bir terminal açın ve proje ana dizininde (veya backend klasöründe) şu komutları çalıştırın:
+
+Bash
+# Sanal ortam (virtual environment) oluşturun
+python -m venv venv
+
+# Sanal ortamı aktifleştirin
+# Windows için:
+venv\Scripts\activate
+# macOS/Linux için:
+source venv/bin/activate
+
+# Gerekli bağımlılıkları yükleyin
+pip install -r requirements.txt
+
+# FastAPI sunucusunu başlatın
+uvicorn main:app --reload
+Backend sunucusu http://127.0.0.1:8000 adresinde çalışmaya başlayacaktır. API dokümantasyonuna ve test arayüzüne (Swagger UI) http://127.0.0.1:8000/docs adresinden ulaşabilirsiniz.
+
+3. Frontend (React/Vite) Kurulumu
+Yeni bir terminal sekmesi açın ve frontend klasörüne gidin:
+
+Bash
+cd frontend
+
+# Node modüllerini ve paketleri yükleyin
+npm install
+
+# Vite geliştirici sunucusunu başlatın
+npm run dev
+Frontend uygulaması http://localhost:5173 adresinde çalışmaya başlayacaktır.
+
+Bu proje, Çanakkale Onsekiz Mart Üniversitesi Bilgisayar Mühendisliği Bölümü Staj programı kapsamında Kübra Yılmaz tarafından geliştirilmiştir.
