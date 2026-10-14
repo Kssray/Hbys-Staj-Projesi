@@ -57,7 +57,9 @@ SQLModel tabanlı ilişkisel veritabanı şeması şu ana varlıkları içerir:
 
 ## ⚙️ Kurulum ve Çalıştırma
 
-*(Bu bölüme projeyi lokal ortamda ayağa kaldırmak için gerekli `npm install`, `npm run dev`, `pip install -r requirements.txt`, `uvicorn main:app --reload` gibi terminal komutlarını ekleyebilirsin.)*
+Projeyi lokal ortamınızda çalıştırmak için aşağıdaki adımları izleyebilirsiniz. Bilgisayarınızda **Python 3.8+** ve **Node.js** yüklü olduğundan emin olun.
 
----
-*Bu proje, Çanakkale Onsekiz Mart Üniversitesi Bilgisayar Mühendisliği Bölümü Staj programı kapsamında Kübra Yılmaz tarafından geliştirilmiştir.*
+### 1. Projeyi Klonlayın
+```bash
+git clone [https://github.com/kullaniciadi/hbys-project.git](https://github.com/kullaniciadi/hbys-project.git)
+cd hbys-project
