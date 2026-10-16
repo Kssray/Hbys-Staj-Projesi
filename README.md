@@ -11,7 +11,7 @@
 
 Bu proje, hastanelerdeki manuel kayıt süreçlerinin yarattığı veri kirliliğini önlemek, poliklinik-servis-yatak yönetimi arasındaki koordinasyonu sağlamak ve klinik iş akışlarını dijitalleştirerek sağlık personelinin iş yükünü optimize etmek amacıyla tasarlanmıştır.
 
-## 🏗️ Sistem Mimarisi (3-Tier Architecture)
+##  Sistem Mimarisi (3-Tier Architecture)
 
 Proje, ölçeklenebilirlik ve sürdürülebilirlik prensiplerine uygun olarak 3 katmanlı (3-Tier) modern bir web mimarisi üzerine inşa edilmiştir:
 
@@ -19,7 +19,7 @@ Proje, ölçeklenebilirlik ve sürdürülebilirlik prensiplerine uygun olarak 3 
 2.  **Mantıksal Katman (Backend):** Asenkron RESTful API yönetimi, iş akışları ve yetkilendirme servisleri. (Python, FastAPI, Pydantic)
 3.  **Veri Katmanı (Database):** Nesne yönelimli veritabanı tasarımı (ORM) ve kalıcı veri depolama. (SQLModel, SQLite, Migrations)
 
-## 🚀 Temel Özellikler ve Modüller
+## Temel Özellikler ve Modüller
 
 ### 1. Rol Bazlı Yetkilendirme (RBAC) ve Güvenlik
 Sistem, kullanıcı rollerine göre sıkı bir erişim kontrolü (Role-Based Access Control) uygular:
@@ -47,7 +47,7 @@ Yatak durumları (Boş/Dolu/Temizlikte) backend tarafında atomik işlemlerle (S
 *   Taburcu sonrası oluşan yatak temizlik taleplerinin "Bekliyor", "Başladı" ve "Tamamlandı" fazlarıyla görev bazlı takibi.
 *   Yönetici panelinde hastane geneli ve poliklinik bazlı doluluk oranlarının gerçek zamanlı dashboard tasarımı ile görselleştirilmesi.
 
-## 🗄️ Veri Modeli ve Klinik Varlıklar (Entity-Relationship)
+##  Veri Modeli ve Klinik Varlıklar (Entity-Relationship)
 
 SQLModel tabanlı ilişkisel veritabanı şeması şu ana varlıkları içerir:
 *   `Patient`, `Doctor`, `Department`
@@ -56,7 +56,7 @@ SQLModel tabanlı ilişkisel veritabanı şeması şu ana varlıkları içerir:
 *   `CleaningTask` (Taburcu ve transfer işlemlerinde tetiklenir)
 
 Markdown
-## ⚙️ Kurulum ve Çalıştırma
+##  Kurulum ve Çalıştırma
 
 Projeyi lokal ortamınızda çalıştırmak için aşağıdaki adımları izleyebilirsiniz. Bilgisayarınızda **Python 3.8+** ve **Node.js** yüklü olduğundan emin olun.
 
